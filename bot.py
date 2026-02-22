@@ -160,7 +160,8 @@ def init_db():
             user_id TEXT PRIMARY KEY,
             start_hour INTEGER NOT NULL DEFAULT 10,
             end_hour INTEGER NOT NULL DEFAULT 18,
-            tz TEXT NOT NULL DEFAULT 'EST',
+            tz TEXT NOT NULL DEFAULT 'CET',
+            work_days TEXT NOT NULL DEFAULT '0,1,2,3,4',
             updated_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS snoozes (
@@ -175,10 +176,19 @@ def init_db():
             created_by TEXT,
             PRIMARY KEY (date)
         );
+        CREATE TABLE IF NOT EXISTS leave_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL, username TEXT NOT NULL,
+            start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+            reason TEXT NOT NULL, status TEXT DEFAULT 'pending',
+            reviewed_by TEXT, reviewed_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
         CREATE INDEX IF NOT EXISTS idx_sessions_user_date ON work_sessions(user_id, date);
         CREATE INDEX IF NOT EXISTS idx_off_user_date ON days_off(user_id, date);
         CREATE INDEX IF NOT EXISTS idx_dailies_user_date ON dailies(user_id, date);
         CREATE INDEX IF NOT EXISTS idx_edits_status ON edit_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status);
     """)
     conn.commit(); conn.close()
 
@@ -270,6 +280,30 @@ MSG_HOLIDAY_WORKER = [
     "{name} ne connaît pas les jours fériés 😤 ({holiday} ? Connais pas.)",
 ]
 
+MSG_CONGE_APPROVED = [
+    "🏖️ Congé approuvé ! {name} est en vacances du **{start}** au **{end}**. Profite bien ! 🌴",
+    "✅ C'est validé ! {name} est off du **{start}** au **{end}**. Repose-toi bien ! 😎",
+    "🎉 Congé confirmé pour {name} ! Du **{start}** au **{end}**. Don't forget to touch grass 🌱",
+]
+
+MSG_ON_LEAVE_TODAY = [
+    "🏖️ **{name}** est en congé aujourd'hui ! ({reason}) — back soon ✌️",
+    "😴 **{name}** profite de son congé ({reason}). Ne rien attendre de ce côté-là aujourd'hui !",
+    "🌴 **{name}** est off ({reason}). Pas de panique, c'est prévu !",
+]
+
+MSG_SESSION_FORGOTTEN_END = [
+    "🕐 Hey {name}, il est **{hour}h** et ta session est toujours ouverte ! T'as oublié `/stop` ou tu fais des heures sup ?",
+    "🕐 {name}, normalement tu finis à **{hour}h**... Session toujours ouverte ! `/stop` si t'as fini 😉",
+    "🕐 {name}, ta journée devait finir à **{hour}h** et t'es encore en mode 'working'. Tu bosses encore ou t'as oublié ?",
+]
+
+MSG_SESSION_TOO_LONG = [
+    "⚠️ **{name}** a une session ouverte depuis plus de **{hours}** ! C'est sûrement un oubli de `/stop`.",
+    "🚨 Session de **{name}** ouverte depuis **{hours}** ! Probablement un oubli.",
+    "👀 **{name}** en mode travail depuis **{hours}**... Oubli de `/stop` ?",
+]
+
 def pick(messages, **kwargs):
     """Choisit un message aléatoire et le formate."""
     return random.choice(messages).format(**kwargs)
@@ -306,8 +340,36 @@ def get_rate(conn, uid):
     return (r["rate"], r["currency"]) if r else (DEFAULT_HOURLY_RATE, "$")
 
 def get_schedule(conn, uid):
-    r = conn.execute("SELECT start_hour, end_hour, tz FROM user_schedules WHERE user_id=?", (uid,)).fetchone()
-    return (r["start_hour"], r["end_hour"], r["tz"]) if r else (DEFAULT_SCHEDULE_START, DEFAULT_SCHEDULE_END, DEFAULT_TIMEZONE)
+    r = conn.execute("SELECT start_hour, end_hour, tz, work_days FROM user_schedules WHERE user_id=?", (uid,)).fetchone()
+    if r:
+        return (r["start_hour"], r["end_hour"], r["tz"], r["work_days"])
+    return (DEFAULT_SCHEDULE_START, DEFAULT_SCHEDULE_END, DEFAULT_TIMEZONE, "0,1,2,3,4")
+
+def get_work_days(conn, uid):
+    """Retourne la liste des jours de travail (0=lundi ... 6=dimanche)."""
+    _, _, _, wd_str = get_schedule(conn, uid)
+    return [int(d.strip()) for d in wd_str.split(",") if d.strip().isdigit()]
+
+def is_work_day(conn, uid, dt=None):
+    """Vérifie si la date donnée est un jour de travail pour l'artiste."""
+    if dt is None:
+        _, _, user_tz, _ = get_schedule(conn, uid)
+        dt = now_tz(user_tz)
+    return dt.weekday() in get_work_days(conn, uid)
+
+# Mapping jours FR <-> numéros
+JOURS_FR = {"lundi":0, "mardi":1, "mercredi":2, "jeudi":3, "vendredi":4, "samedi":5, "dimanche":6}
+JOURS_NAMES = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
+
+def parse_days(text):
+    """Parse 'lundi,mardi,mercredi,jeudi' → '0,1,2,3'"""
+    days = []
+    for part in text.lower().replace(" ", "").split(","):
+        if part in JOURS_FR:
+            days.append(JOURS_FR[part])
+        elif part.isdigit() and 0 <= int(part) <= 6:
+            days.append(int(part))
+    return sorted(set(days))
 
 def utc_time(h, m=0):
     return time(hour=(h - tz_offset(DEFAULT_TIMEZONE)) % 24, minute=m)
@@ -659,15 +721,92 @@ async def cmd_myschedule(interaction: discord.Interaction, debut: int, fin: int,
             (uid, debut, fin, tz_upper, now().isoformat(), debut, fin, tz_upper, now().isoformat()))
         conn.commit()
         offset = tz_offset(tz_upper)
+        work_days = get_work_days(conn, uid)
+        days_txt = ", ".join(JOURS_NAMES[d] for d in work_days)
         e = discord.Embed(
             title="🕐 Horaires mis à jour",
             description=(
                 f"**{interaction.user.display_name}**\n"
                 f"📅 {debut}h → {fin}h ({tz_upper}, UTC{offset:+d})\n"
-                f"⏰ Rappel dans ton canal progress à **{debut+1}h {tz_upper}** si tu n'as pas pointé."
+                f"📆 Jours: {days_txt}\n"
+                f"⏰ Rappel à **{debut+1}h {tz_upper}** si pas pointé."
             ),
             color=0x3498DB)
         await interaction.response.send_message(embed=e, ephemeral=True)
+    finally: conn.close()
+
+@bot.tree.command(name="mydays", description="📆 Tes jours de travail")
+@app_commands.describe(jours="Jours séparés par des virgules (ex: lundi,mardi,mercredi,jeudi)")
+async def cmd_mydays(interaction: discord.Interaction, jours: str):
+    days = parse_days(jours)
+    if not days:
+        return await interaction.response.send_message(
+            "⚠️ Format: `lundi,mardi,mercredi,jeudi,vendredi`\nJours valides: lundi, mardi, mercredi, jeudi, vendredi, samedi, dimanche",
+            ephemeral=True)
+    days_str = ",".join(str(d) for d in days)
+    conn = get_db()
+    try:
+        uid = str(interaction.user.id)
+        existing = conn.execute("SELECT * FROM user_schedules WHERE user_id=?", (uid,)).fetchone()
+        if existing:
+            conn.execute("UPDATE user_schedules SET work_days=?, updated_at=? WHERE user_id=?",
+                         (days_str, now().isoformat(), uid))
+        else:
+            conn.execute("INSERT INTO user_schedules (user_id,start_hour,end_hour,tz,work_days,updated_at) VALUES (?,?,?,?,?,?)",
+                         (uid, DEFAULT_SCHEDULE_START, DEFAULT_SCHEDULE_END, DEFAULT_TIMEZONE, days_str, now().isoformat()))
+        conn.commit()
+        days_txt = ", ".join(JOURS_NAMES[d] for d in days)
+        sched_start, sched_end, user_tz, _ = get_schedule(conn, uid)
+        e = discord.Embed(
+            title="📆 Jours de travail mis à jour",
+            description=(
+                f"**{interaction.user.display_name}**\n"
+                f"📆 **{days_txt}** ({len(days)}j/semaine)\n"
+                f"🕐 {sched_start}h → {sched_end}h ({user_tz})\n"
+                f"Le bot ne t'embêtera pas les autres jours ✌️"
+            ),
+            color=0x3498DB)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+    finally: conn.close()
+
+@bot.tree.command(name="conge", description="🏖️ Demander un congé")
+@app_commands.describe(debut="Date début YYYY-MM-DD", fin="Date fin YYYY-MM-DD (même jour si 1 jour)", raison="Raison")
+async def cmd_conge(interaction: discord.Interaction, debut: str, fin: str, raison: str="Congé"):
+    conn = get_db()
+    try:
+        uid, name = str(interaction.user.id), interaction.user.display_name
+        try:
+            d1 = datetime.strptime(debut, "%Y-%m-%d"); d2 = datetime.strptime(fin, "%Y-%m-%d")
+        except:
+            return await interaction.response.send_message("⚠️ Format: YYYY-MM-DD", ephemeral=True)
+        if d2 < d1:
+            return await interaction.response.send_message("⚠️ La fin doit être après le début.", ephemeral=True)
+        # Pas dans le passé (mais aujourd'hui OK)
+        today = datetime.strptime(today_str(), "%Y-%m-%d")
+        if d1 < today:
+            return await interaction.response.send_message("⚠️ Pas de congé dans le passé ! Utilise `/edit` pour corriger des jours passés.", ephemeral=True)
+        # Vérifier doublon
+        existing = conn.execute("SELECT * FROM leave_requests WHERE user_id=? AND start_date=? AND end_date=? AND status='pending'", (uid, debut, fin)).fetchone()
+        if existing:
+            return await interaction.response.send_message("⚠️ Tu as déjà une demande en attente pour ces dates.", ephemeral=True)
+        nb_days = (d2 - d1).days + 1
+        conn.execute("INSERT INTO leave_requests (user_id,username,start_date,end_date,reason) VALUES (?,?,?,?,?)",
+                     (uid, name, debut, fin, raison)); conn.commit()
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        e = discord.Embed(title="🏖️ Congé demandé", description=f"Demande **#{rid}**", color=0x9B59B6)
+        e.add_field(name="Dates", value=f"**{debut}** → **{fin}** ({nb_days} jour{'s' if nb_days>1 else ''})", inline=True)
+        e.add_field(name="Raison", value=raison, inline=True)
+        e.set_footer(text="En attente de validation admin")
+        await interaction.response.send_message(embed=e, ephemeral=True)
+        # Notifier dans #time-tracking
+        for g in bot.guilds:
+            ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+            if ch:
+                ae = discord.Embed(title=f"🏖️ Demande de congé #{rid}", description=f"**{name}**", color=0x9B59B6)
+                ae.add_field(name="Dates", value=f"**{debut}** → **{fin}** ({nb_days}j)", inline=True)
+                ae.add_field(name="Raison", value=raison, inline=True)
+                ae.set_footer(text="/pendingconge → /approveconge ou /rejectconge")
+                await ch.send(embed=ae)
     finally: conn.close()
 
 @bot.tree.command(name="edit", description="✏️ Correction d'heures")
@@ -1159,6 +1298,80 @@ async def cmd_cancelvacances(interaction: discord.Interaction, debut: str, fin: 
         await interaction.response.send_message(embed=e)
     finally: conn.close()
 
+@bot.tree.command(name="pendingconge", description="📋 Demandes de congé en attente (admin)")
+async def cmd_pendingconge(interaction: discord.Interaction):
+    if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
+    conn = get_db()
+    try:
+        reqs = conn.execute("SELECT * FROM leave_requests WHERE status='pending' ORDER BY start_date").fetchall()
+        if not reqs: return await interaction.response.send_message("✅ Aucune demande en attente.", ephemeral=True)
+        e = discord.Embed(title=f"🏖️ Demandes de congé ({len(reqs)})", color=0x9B59B6)
+        for r in reqs:
+            nb = (datetime.strptime(r["end_date"],"%Y-%m-%d") - datetime.strptime(r["start_date"],"%Y-%m-%d")).days + 1
+            e.add_field(name=f"#{r['id']} — {r['username']}", value=f"**{r['start_date']}** → **{r['end_date']}** ({nb}j)\n{r['reason']}\n`/approveconge {r['id']}` · `/rejectconge {r['id']}`", inline=False)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+    finally: conn.close()
+
+@bot.tree.command(name="approveconge", description="✅ Approuver un congé (admin)")
+@app_commands.describe(id="Numéro de la demande")
+async def cmd_approveconge(interaction: discord.Interaction, id: int):
+    if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
+    conn = get_db()
+    try:
+        req = conn.execute("SELECT * FROM leave_requests WHERE id=? AND status='pending'", (id,)).fetchone()
+        if not req: return await interaction.response.send_message(f"⚠️ #{id} introuvable.", ephemeral=True)
+        # Créer les jours off
+        d1 = datetime.strptime(req["start_date"], "%Y-%m-%d")
+        d2 = datetime.strptime(req["end_date"], "%Y-%m-%d")
+        current = d1; count = 0
+        while current <= d2:
+            ds = current.strftime("%Y-%m-%d")
+            existing = conn.execute("SELECT id FROM days_off WHERE user_id=? AND date=?", (req["user_id"], ds)).fetchone()
+            if not existing:
+                conn.execute("INSERT INTO days_off (user_id,username,date,reason) VALUES (?,?,?,?)",
+                             (req["user_id"], req["username"], ds, f"🏖️ Congé: {req['reason']}"))
+                count += 1
+            current += timedelta(days=1)
+        conn.execute("UPDATE leave_requests SET status='approved', reviewed_by=?, reviewed_at=? WHERE id=?",
+                     (interaction.user.display_name, now().isoformat(), id))
+        conn.commit()
+        nb = (d2 - d1).days + 1
+        msg = pick(MSG_CONGE_APPROVED, name=req["username"], start=req["start_date"], end=req["end_date"])
+        e = discord.Embed(title=f"✅ Congé #{id} approuvé", description=msg, color=0x2ECC71)
+        e.add_field(name="Détails", value=f"**{req['username']}** — {nb} jour{'s' if nb>1 else ''}\n{req['reason']}", inline=False)
+        await interaction.response.send_message(embed=e)
+        # Notifier l'artiste dans son canal progress
+        try:
+            m = interaction.guild.get_member(int(req["user_id"]))
+            if m:
+                ch = find_progress_channel(interaction.guild, m)
+                if ch:
+                    await ch.send(f"✅ {m.mention} — Ton congé du **{req['start_date']}** au **{req['end_date']}** a été approuvé ! Profite bien 🏖️")
+        except: pass
+    finally: conn.close()
+
+@bot.tree.command(name="rejectconge", description="❌ Rejeter un congé (admin)")
+@app_commands.describe(id="Numéro", raison="Raison du refus")
+async def cmd_rejectconge(interaction: discord.Interaction, id: int, raison: str=""):
+    if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
+    conn = get_db()
+    try:
+        req = conn.execute("SELECT * FROM leave_requests WHERE id=? AND status='pending'", (id,)).fetchone()
+        if not req: return await interaction.response.send_message(f"⚠️ #{id} introuvable.", ephemeral=True)
+        conn.execute("UPDATE leave_requests SET status='rejected', reviewed_by=?, reviewed_at=? WHERE id=?",
+                     (interaction.user.display_name, now().isoformat(), id))
+        conn.commit()
+        e = discord.Embed(title=f"❌ Congé #{id} refusé", description=f"**{req['username']}** {req['start_date']}→{req['end_date']}\n{raison}", color=0xE74C3C)
+        await interaction.response.send_message(embed=e)
+        try:
+            m = interaction.guild.get_member(int(req["user_id"]))
+            if m:
+                ch = find_progress_channel(interaction.guild, m)
+                if ch:
+                    await ch.send(f"❌ {m.mention} — Ton congé du **{req['start_date']}** au **{req['end_date']}** a été refusé. {raison}")
+        except: pass
+    finally: conn.close()
+
 # ═══════════════════ SCHEDULED TASKS ═════════════════════════════════════════
 
 @tasks.loop(minutes=15)
@@ -1183,11 +1396,11 @@ async def reminder_start():
                 if snooze and utc_now < datetime.fromisoformat(snooze["snooze_until"]):
                     continue
                 # Heure locale de l'artiste
-                sched_start, _, user_tz = get_schedule(conn, uid)
+                sched_start, _, user_tz, _ = get_schedule(conn, uid)
                 user_now = now_tz(user_tz)
                 user_hour = user_now.hour
-                # Weekend dans le timezone de l'artiste ?
-                if user_now.weekday() >= 5: continue
+                # Pas un jour de travail pour cet artiste ?
+                if not is_work_day(conn, uid, user_now): continue
                 # Rappel si heure locale = start + 1 (fenêtre de 15min)
                 if user_hour != sched_start + 1: continue
                 if user_now.minute >= 15: continue
@@ -1203,6 +1416,71 @@ async def reminder_start():
     finally: conn.close()
 
 @tasks.loop(minutes=30)
+async def notify_leave_today():
+    """Le matin, poste un message dans le canal progress des artistes en congé."""
+    current = now()
+    if current.hour != DEFAULT_SCHEDULE_START or current.minute >= 30:
+        return  # Seulement une fois le matin
+    conn = get_db()
+    try:
+        date = today_str()
+        offs = conn.execute("SELECT * FROM days_off WHERE date=? AND reason LIKE '🏖️ Congé:%'", (date,)).fetchall()
+        for g in bot.guilds:
+            for o in offs:
+                m = g.get_member(int(o["user_id"]))
+                if not m: continue
+                ch = find_progress_channel(g, m)
+                if not ch: continue
+                reason = o["reason"].replace("🏖️ Congé: ", "")
+                try:
+                    await ch.send(pick(MSG_ON_LEAVE_TODAY, name=m.display_name, reason=reason))
+                except: pass
+    finally: conn.close()
+
+@tasks.loop(minutes=30)
+async def check_forgotten_sessions():
+    """Détecte les sessions oubliées: rappel à end_hour + alerte admin si >10h."""
+    conn = get_db()
+    try:
+        date = today_str()
+        for g in bot.guilds:
+            alert_lines = []  # Pour l'admin
+            for a in get_team_members(g):
+                uid = str(a.id)
+                active = get_active_session(conn, uid)
+                if not active: continue
+                sched_start, sched_end, user_tz, _ = get_schedule(conn, uid)
+                user_now = now_tz(user_tz)
+                user_hour = user_now.hour
+                session_mins = calc_mins(active)
+                session_hours = session_mins / 60
+
+                # 1) Rappel à end_hour: "t'as oublié /stop ?"
+                if user_hour == sched_end and user_now.minute < 30:
+                    ch = find_progress_channel(g, a)
+                    if ch:
+                        try:
+                            await ch.send(f"{a.mention}\n{pick(MSG_SESSION_FORGOTTEN_END, name=a.display_name, hour=sched_end)}")
+                        except: pass
+
+                # 2) Alerte si session > 10h
+                if session_hours >= 10:
+                    ch = find_progress_channel(g, a)
+                    if ch:
+                        try:
+                            await ch.send(f"{a.mention}\n⚠️ Ta session est ouverte depuis **{fmt(session_mins)}** ! `/stop` si t'as fini, ou `/pause` si tu fais une pause.")
+                        except: pass
+                    alert_lines.append(pick(MSG_SESSION_TOO_LONG, name=a.display_name, hours=fmt(session_mins)))
+
+            # Notifier l'admin dans #time-tracking
+            if alert_lines:
+                ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+                if ch:
+                    e = discord.Embed(title="⚠️ Sessions suspectes", description="\n".join(alert_lines), color=0xE74C3C)
+                    await ch.send(embed=e)
+    finally: conn.close()
+
+@tasks.loop(minutes=30)
 async def reminder_daily():
     """Rappel daily dans le canal progress si l'artiste a travaillé mais pas posté."""
     utc_now = now_utc()
@@ -1215,7 +1493,7 @@ async def reminder_daily():
                 if not conn.execute("SELECT id FROM work_sessions WHERE user_id=? AND date=?", (uid,date)).fetchone(): continue
                 if conn.execute("SELECT id FROM dailies WHERE user_id=? AND date=?", (uid,date)).fetchone(): continue
                 # Check heure locale
-                sched_start, _, user_tz = get_schedule(conn, uid)
+                sched_start, _, user_tz, _ = get_schedule(conn, uid)
                 user_now = now_tz(user_tz)
                 # Rappel daily = start + REMINDER_DAILY_OFFSET heures
                 daily_hour = sched_start + REMINDER_DAILY_OFFSET
@@ -1315,21 +1593,66 @@ async def notify_holidays():
 # ─── Night Owl Tasks ─────────────────────────────────────────────────────────
 
 @tasks.loop(time=utc_time(20, 0))
-async def reminder_daily_20h():
-    """Rappel daily insistant à 20h pour ceux qui ont travaillé mais pas posté."""
+async def evening_summary_20h():
+    """À 20h: résumé auto du jour dans #time-tracking + rappel daily aux retardataires."""
     conn = get_db()
     try:
         date = today_str()
+        sessions = conn.execute("SELECT * FROM work_sessions WHERE date=? ORDER BY username", (date,)).fetchall()
+        offs = conn.execute("SELECT * FROM days_off WHERE date=? ORDER BY username", (date,)).fetchall()
+        dailies = conn.execute("SELECT * FROM dailies WHERE date=? ORDER BY username", (date,)).fetchall()
+
         for g in bot.guilds:
-            for a in get_team_members(g):
+            dept_map = build_dept_map(g)
+            members = get_team_members(g)
+            s_ids = {s["user_id"] for s in sessions}; o_ids = {o["user_id"] for o in offs}; d_ids = {d["user_id"] for d in dailies}
+
+            e = discord.Embed(title=f"📋 Résumé 20h — {date}", color=0x3498DB)
+            if sessions:
+                lines = []
+                for s in sessions:
+                    wm = calc_mins(s)
+                    st = datetime.fromisoformat(s["start_time"]).strftime("%H:%M")
+                    en = datetime.fromisoformat(s["end_time"]).strftime("%H:%M") if s["end_time"] else "en cours"
+                    icon = "⏸️" if s["status"]=="paused" else ("✅" if s["status"]=="done" else "🟢")
+                    dept = dept_map.get(s["user_id"], "")
+                    dept_tag = f" `{dept}`" if dept else ""
+                    has_daily = "📝" if s["user_id"] in d_ids else "❌📝"
+                    lines.append(f"{icon} **{s['username']}**{dept_tag} {st}→{en} **{fmt(wm)}** {has_daily}")
+                e.add_field(name="💼 Travail", value="\n".join(lines), inline=False)
+            if offs:
+                e.add_field(name="🏖️ Off/Congé", value="\n".join(f"**{o['username']}** — {o['reason']}" for o in offs), inline=False)
+            # Pas pointé
+            not_started = [m for m in members if str(m.id) not in s_ids and str(m.id) not in o_ids]
+            if not_started:
+                e.add_field(name=f"👻 Pas pointé ({len(not_started)})", value=", ".join(f"**{a.display_name}**" for a in not_started), inline=False)
+            # Dailies avec liens
+            if dailies:
+                dl_lines = []
+                for d in dailies:
+                    link = f" [📎]({d['message_url']})" if d["message_url"] else ""
+                    dl_lines.append(f"**{d['username']}** — {d['message'][:60]}{'...' if len(d['message'])>60 else ''}{link}")
+                e.add_field(name="📝 Dailies", value="\n".join(dl_lines), inline=False)
+            # Dailies manquants
+            no_daily = [s["username"] for s in sessions if s["user_id"] not in d_ids and s["user_id"] not in o_ids]
+            if no_daily:
+                e.add_field(name=f"⚠️ Dailies manquants ({len(no_daily)})", value=", ".join(f"**{n}**" for n in no_daily), inline=False)
+
+            ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+            if ch:
+                await ch.send(embed=e)
+
+            # Rappel daily aux retardataires dans leur canal progress
+            for a in members:
                 uid = str(a.id)
-                if not conn.execute("SELECT id FROM work_sessions WHERE user_id=? AND date=?", (uid,date)).fetchone(): continue
-                if conn.execute("SELECT id FROM dailies WHERE user_id=? AND date=?", (uid,date)).fetchone(): continue
-                ch = find_progress_channel(g, a)
-                if not ch: continue
-                try:
-                    await ch.send(f"{a.mention}\n{pick(MSG_REMINDER_DAILY_20H, name=a.display_name)}")
-                except: pass
+                if uid not in s_ids: continue
+                if uid in d_ids: continue
+                if uid in o_ids: continue
+                pch = find_progress_channel(g, a)
+                if pch:
+                    try:
+                        await pch.send(f"{a.mention}\n{pick(MSG_REMINDER_DAILY_20H, name=a.display_name)}")
+                    except: pass
     finally: conn.close()
 
 @tasks.loop(time=utc_time(0, 1))
@@ -1401,12 +1724,12 @@ async def on_ready():
         print(f"   {TEAM_ROLE_NAME}: {len(team)} membres | Depts: {', '.join(depts) if depts else 'aucun'}")
         progress = [c.name for c in g.text_channels if c.name.endswith(PROGRESS_CHANNEL_SUFFIX)]
         print(f"   Canaux progress: {len(progress)} ({', '.join(progress[:5])}{'...' if len(progress)>5 else ''})")
-    for t in [daily_summary, auto_close, reminder_start, reminder_daily, notify_holidays,
-              reminder_daily_20h, midnight_check, force_close_3am]:
+    for t in [daily_summary, auto_close, reminder_start, notify_leave_today, check_forgotten_sessions,
+              reminder_daily, notify_holidays, evening_summary_20h, midnight_check, force_close_3am]:
         if not t.is_running(): t.start()
-    print(f"   Daily: '{DAILY_KEYWORD}' dans *{PROGRESS_CHANNEL_SUFFIX}")
-    print(f"   Rappels: dans canaux progress (timezone par artiste)")
-    print(f"   Jours fériés France: activés | Night owl: minuit + 3h")
+    print(f"   Daily: '{DAILY_KEYWORD}' dans *{PROGRESS_CHANNEL_SUFFIX} | /stop bloqué sans daily")
+    print(f"   Rappels: canaux progress (timezone par artiste)")
+    print(f"   Fériés France | Night owl: minuit+3h | Résumé 20h")
     print("   🎉 Prêt !")
 
 if __name__ == "__main__":
