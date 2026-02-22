@@ -555,6 +555,84 @@ class MidnightView(View):
             await interaction.followup.send(embed=e)
         finally: conn.close()
 
+# ═══════════════════ REACTION-BASED CONGÉ APPROVAL ═══════════════════════════
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    """Approuve/rejette un congé via réaction ✅/❌ sur le message dans #time-tracking."""
+    if payload.member and payload.member.bot:
+        return
+    emoji = str(payload.emoji)
+    if emoji not in ("✅", "❌"):
+        return
+    guild = bot.get_guild(payload.guild_id)
+    if not guild: return
+    channel = guild.get_channel(payload.channel_id)
+    if not channel or channel.name != SUMMARY_CHANNEL_NAME:
+        return
+    # Vérifier que c'est un admin
+    member = payload.member
+    if not member: return
+    if not (member.guild_permissions.administrator or any(r.name == ADMIN_ROLE_NAME for r in member.roles)):
+        return
+    # Récupérer le message
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except: return
+    if not message.embeds: return
+    embed = message.embeds[0]
+    if not embed.title or "Demande de congé #" not in embed.title: return
+    # Extraire l'ID du congé
+    try:
+        rid = int(embed.title.split("#")[1])
+    except: return
+    conn = get_db()
+    try:
+        req = conn.execute("SELECT * FROM leave_requests WHERE id=? AND status='pending'", (rid,)).fetchone()
+        if not req: return
+        if emoji == "✅":
+            # Approuver
+            d1 = datetime.strptime(req["start_date"], "%Y-%m-%d")
+            d2 = datetime.strptime(req["end_date"], "%Y-%m-%d")
+            current = d1
+            while current <= d2:
+                ds = current.strftime("%Y-%m-%d")
+                if not conn.execute("SELECT id FROM days_off WHERE user_id=? AND date=?", (req["user_id"], ds)).fetchone():
+                    conn.execute("INSERT INTO days_off (user_id,username,date,reason) VALUES (?,?,?,?)",
+                                 (req["user_id"], req["username"], ds, f"🏖️ Congé: {req['reason']}"))
+                current += timedelta(days=1)
+            conn.execute("UPDATE leave_requests SET status='approved', reviewed_by=?, reviewed_at=? WHERE id=?",
+                         (member.display_name, now().isoformat(), rid))
+            conn.commit()
+            msg = pick(MSG_CONGE_APPROVED, name=req["username"], start=req["start_date"], end=req["end_date"])
+            e = discord.Embed(title=f"✅ Congé #{rid} approuvé", description=msg, color=0x2ECC71)
+            await channel.send(embed=e)
+            # Notifier l'artiste
+            art = guild.get_member(int(req["user_id"]))
+            if art:
+                ch = find_progress_channel(guild, art)
+                if ch:
+                    try: await ch.send(f"✅ {art.mention} — Ton congé du **{req['start_date']}** au **{req['end_date']}** a été approuvé ! Profite bien 🏖️")
+                    except: pass
+        else:
+            # Rejeter
+            conn.execute("UPDATE leave_requests SET status='rejected', reviewed_by=?, reviewed_at=? WHERE id=?",
+                         (member.display_name, now().isoformat(), rid))
+            conn.commit()
+            e = discord.Embed(title=f"❌ Congé #{rid} refusé", description=f"**{req['username']}** {req['start_date']}→{req['end_date']}", color=0xE74C3C)
+            await channel.send(embed=e)
+            art = guild.get_member(int(req["user_id"]))
+            if art:
+                ch = find_progress_channel(guild, art)
+                if ch:
+                    try: await ch.send(f"❌ {art.mention} — Ton congé du **{req['start_date']}** au **{req['end_date']}** a été refusé.")
+                    except: pass
+        # Retirer les réactions du message original
+        try:
+            await message.clear_reactions()
+        except: pass
+    finally: conn.close()
+
 # ═══════════════════ #DAILY DETECTION ════════════════════════════════════════
 
 @bot.event
@@ -798,15 +876,19 @@ async def cmd_conge(interaction: discord.Interaction, debut: str, fin: str, rais
         e.add_field(name="Raison", value=raison, inline=True)
         e.set_footer(text="En attente de validation admin")
         await interaction.response.send_message(embed=e, ephemeral=True)
-        # Notifier dans #time-tracking
+        # Notifier dans #time-tracking avec tag admin + réactions
         for g in bot.guilds:
             ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
             if ch:
+                admin_role = discord.utils.get(g.roles, name=ADMIN_ROLE_NAME)
+                admin_ping = admin_role.mention if admin_role else "@Admin"
                 ae = discord.Embed(title=f"🏖️ Demande de congé #{rid}", description=f"**{name}**", color=0x9B59B6)
                 ae.add_field(name="Dates", value=f"**{debut}** → **{fin}** ({nb_days}j)", inline=True)
                 ae.add_field(name="Raison", value=raison, inline=True)
-                ae.set_footer(text="/pendingconge → /approveconge ou /rejectconge")
-                await ch.send(embed=ae)
+                ae.set_footer(text=f"Congé #{rid} — ✅ pour approuver, ❌ pour refuser")
+                msg = await ch.send(f"{admin_ping} — Nouvelle demande de congé :", embed=ae)
+                await msg.add_reaction("✅")
+                await msg.add_reaction("❌")
     finally: conn.close()
 
 @bot.tree.command(name="edit", description="✏️ Correction d'heures")
