@@ -91,7 +91,9 @@ Le bot met la bonne ambiance. Messages aléatoires modifiables dans les listes `
 3. OAuth2 : `bot` + `applications.commands` · Permissions : Send Messages, Embeds, Attach Files, Read History, Add Reactions
 
 ### 2. Serveur Discord
-- `#time-tracking` + canaux `-progress` par artiste
+- `#time-tracking` — résumés publics, dailies
+- `#time-tracking-admin` — infos privées (sessions suspectes, demandes de congé, dailies manquants)
+- Canaux `-progress` par artiste (format flexible : `🍕 | maria-progress` OK)
 - Rôles : `Admin`, `DreamTeam`, départements optionnels (`Animation Team`...)
 
 ### 3. Railway

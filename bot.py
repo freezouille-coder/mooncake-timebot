@@ -39,6 +39,7 @@ ADMIN_ROLE_NAME = "Admin"
 TEAM_ROLE_NAME = "DreamTeam"
 DEPT_ROLE_SUFFIX = "Team"
 SUMMARY_CHANNEL_NAME = "time-tracking"
+ADMIN_CHANNEL_NAME = "time-tracking-admin"
 PROGRESS_CHANNEL_SUFFIX = "-progress"
 DAILY_KEYWORD = "#daily"
 DEFAULT_SCHEDULE_START = 10
@@ -184,6 +185,11 @@ def init_db():
             reviewed_by TEXT, reviewed_at TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS user_channels (
+            user_id TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
         CREATE INDEX IF NOT EXISTS idx_sessions_user_date ON work_sessions(user_id, date);
         CREATE INDEX IF NOT EXISTS idx_off_user_date ON days_off(user_id, date);
         CREATE INDEX IF NOT EXISTS idx_dailies_user_date ON dailies(user_id, date);
@@ -213,6 +219,20 @@ MSG_START = [
     "Allez, on va faire des trucs incroyables aujourd'hui ✨",
     "Le monde n'est pas ready pour ce que tu vas créer 🌍",
     "Tu vas tout déchirer, comme d'hab 💪",
+    "Les pixels ne vont pas se pousser tout seuls ! Let's go 🎨",
+    "Main character energy today ✨",
+    "Loading... creativity.exe... ▓▓▓▓▓▓▓▓░░ 80% 🖥️",
+    "On est là pour casser la baraque ! 🏚️💥",
+    "*crack de doigts* On y va. 🫰",
+    "Nouvelle journée, nouvelles œuvres d'art 🖼️",
+    "Le studio a besoin de tes talents ! Go go go 🏃",
+    "May the force be with you today ⚡",
+    "Journée de prod, journée de légende 📜",
+    "Allez hop, les pinceaux numériques sont prêts ! 🖌️",
+    "Tu vas accomplir de grandes choses. Comme d'habitude. 😏",
+    "Ready Player One! 🕹️",
+    "Time to make art happen ✌️",
+    "Café ✅ Motivation ✅ Talent ✅ On envoie ! 🚀",
 ]
 
 MSG_STOP = [
@@ -226,6 +246,16 @@ MSG_STOP = [
     "Ctrl+S ta journée, c'est dans la boîte ! 💾",
     "Tu peux être fier·e de toi aujourd'hui 🌟",
     "Pack it up, on se retrouve demain ! 🎒",
+    "Achievement unlocked: Another productive day 🏅",
+    "Le studio te remercie. Ton canapé aussi. 🛋️",
+    "Time to touch some grass 🌿 (ou au moins Netflix)",
+    "Beau travail ! Maintenant profite de ta soirée 🌙",
+    "Session terminée, légende intacte 🐐",
+    "Et voilà, encore une journée de travail bien faite ! ✨",
+    "Fin de la transmission. Over and out 📻",
+    "Allez, va profiter ! Tu le mérites 🍕",
+    "Le bot approuve cette fin de journée. 10/10. ⭐",
+    "On dit merci qui ? Merci toi ! 🫶",
 ]
 
 MSG_STOP_BLOCKED = [
@@ -235,6 +265,12 @@ MSG_STOP_BLOCKED = [
     "On ferme pas boutique sans le daily ! 🏪 Vite un post dans `-progress` avec **#daily** !",
     "Error 403: Daily Required 🤖 Poste dans ton canal `-progress` avec **#daily** pour débloquer /stop.",
     "Le daily c'est comme les légumes, c'est obligatoire 🥦 Go poster dans `-progress` !",
+    "Nuh uh 🙅 Pas de /stop sans daily. C'est la loi. Poste avec **#daily** !",
+    "Tu croyais pouvoir t'échapper sans daily ? Think again 🕵️ Poste avec **#daily** !",
+    "Access denied. 🔒 Le mot de passe c'est **#daily** dans ton canal progress.",
+    "Oopsie ! Daily manquant 📝 Poste vite dans `-progress` avec **#daily**.",
+    "Le bot est inflexible sur ce point 🤖 Daily = obligatoire. Go !",
+    "Plot twist : tu dois d'abord poster ton daily ! 📝 `-progress` + **#daily**",
 ]
 
 MSG_REMINDER_START = [
@@ -244,6 +280,12 @@ MSG_REMINDER_START = [
     "☕ {name}, le café est froid là ! Il est **{hour}h** ({tz}). /start ou /off ?",
     "📡 Signal perdu pour {name}... Il est **{hour}h** ({tz}). Tout roule ?",
     "🐌 {name}, doucement mais sûrement ? Il est **{hour}h** ({tz}), on attend ton /start !",
+    "🎵 Toc toc toc, {name} ! Il est **{hour}h** ({tz}). Y'a quelqu'un ? 🚪",
+    "🔍 Avis de recherche : {name} ! Dernier·e vu·e... nulle part. Il est **{hour}h** ({tz}).",
+    "📣 Appel à {name} ! **{hour}h** ({tz}), les autres ont déjà commencé 😬",
+    "🐑 {name}... **{hour}h** ({tz}). On compte les moutons ou on /start ?",
+    "🎮 {name}, respawn time! Il est **{hour}h** ({tz}). On a besoin de toi !",
+    "🌅 Le soleil est levé, {name} pas encore. **{hour}h** ({tz}). Ça arrive ?",
 ]
 
 MSG_REMINDER_DAILY = [
@@ -252,12 +294,21 @@ MSG_REMINDER_DAILY = [
     "📝 {name}, ton daily attend ! Balance ton avancement avec **#daily** ✨",
     "📝 Show us what you got {name} ! Poste ton daily avec **#daily** 🎨",
     "📝 {name}, qu'est-ce que t'as fait de beau aujourd'hui ? **#daily** time !",
+    "📝 {name}, un daily un daily un daily ! Poste avec **#daily** 🎵",
+    "📝 Petit rappel friendly pour {name} : ton daily avec **#daily** 😊",
+    "📝 {name}, montre-nous tes progrès du jour ! Poste avec **#daily** 🎬",
+    "📝 Daily check pour {name} ! On veut voir ce que t'as fait avec **#daily** 👀",
+    "📝 {name}, c'est l'heure de briller ! Partage ton travail avec **#daily** ⭐",
 ]
 
 MSG_REMINDER_DAILY_20H = [
     "📝 {name}... il est 20h et toujours pas de daily 🥲 Poste vite avec **#daily** sinon tu pourras pas /stop !",
     "📝 Tic tac {name} ! 20h et pas de daily. Tu sais ce qu'il te reste à faire... **#daily** 🕐",
     "📝 {name}, le daily c'est comme la bise en France, on peut pas y échapper ! Poste avec **#daily** 😘",
+    "📝 URGENT {name} ! 20h, pas de daily, `/stop` bloqué. Solution : poste avec **#daily** 🚨",
+    "📝 {name}, le bot ne te lâchera pas 🤖 20h, daily manquant. Poste avec **#daily** et tout ira bien.",
+    "📝 Last call {name} ! Il est 20h, ton daily est en retard. **#daily** dans ton canal, vite ! 🏃",
+    "📝 {name}, on y est presque ! Poste ton daily avec **#daily** et tu pourras enfin /stop 🏁",
 ]
 
 MSG_MIDNIGHT_CHECK = [
@@ -265,6 +316,10 @@ MSG_MIDNIGHT_CHECK = [
     "🌙 Minuit ! {name}, t'es en mode vampire ou quoi ?",
     "🕛 Hey {name}, il est minuit passé... Tu devrais peut-être penser à toi ?",
     "🌚 {name}, même la lune dort bientôt. Tu continues vraiment ?",
+    "🧛 {name}, minuit a sonné ! Le bot s'inquiète pour ton sommeil...",
+    "🦇 *cris de chauve-souris* Minuit, {name} ! T'es sûr·e de vouloir continuer ?",
+    "🕛 {name}, il est minuit. Ton lit est triste sans toi 🛏️",
+    "🌃 Minuit passé, {name}. Tu fais des heures sup ou t'as oublié /stop ?",
 ]
 
 MSG_3AM_FORCE_CLOSE = [
@@ -272,36 +327,47 @@ MSG_3AM_FORCE_CLOSE = [
     "🛏️ 3h du mat, **{name}** ! Allez, on éteint tout. Le bot t'a forcé·e à aller dormir. {hours} de boulot, c'est héroïque mais ton lit t'appelle ! 😤💤",
     "⚠️ ALERTE DODO pour **{name}** ! Il est 3h, session fermée de force. {hours} aujourd'hui, bravo mais DORS. Le projet sera encore là demain, promis 🫶💤",
     "🚨 **{name}**, 3h du mat, c'est fini ! Le bot a activé le protocole repos forcé. {hours} de taf, respect. Maintenant : oreiller. Tout de suite. 🛌",
+    "🤖 OVERRIDE SYSTEM : **{name}**, il est 3h. Session fermée. {hours} aujourd'hui. Le bot t'ordonne de dormir. This is not a suggestion. 😴",
+    "💤 Game over pour **{name}** ! 3h du mat, session auto-fermée. {hours} de taf aujourd'hui. Tu te prends pour qui, Batman ? 🦇 Va dormir !",
 ]
 
 MSG_HOLIDAY_WORKER = [
     "Oh, {name} qui bosse un jour férié ! Respect 💪 {holiday} mais toi t'as des choses à créer.",
     "Jour férié ({holiday}) mais {name} est là ! Dedication level: over 9000 🔥",
     "{name} ne connaît pas les jours fériés 😤 ({holiday} ? Connais pas.)",
+    "{name} travaille pendant {holiday} ! Quand on aime, on ne compte pas 💛",
+    "Le calendrier dit {holiday}, mais {name} dit TRAVAIL 🗓️💪",
 ]
 
 MSG_CONGE_APPROVED = [
     "🏖️ Congé approuvé ! {name} est en vacances du **{start}** au **{end}**. Profite bien ! 🌴",
     "✅ C'est validé ! {name} est off du **{start}** au **{end}**. Repose-toi bien ! 😎",
     "🎉 Congé confirmé pour {name} ! Du **{start}** au **{end}**. Don't forget to touch grass 🌱",
+    "🏖️ Approved ! {name} du **{start}** au **{end}**. See you on the other side ! 🌊",
+    "✅ {name} part du **{start}** au **{end}**. Nous on est jaloux mais bon, approuvé 😤🏖️",
 ]
 
 MSG_ON_LEAVE_TODAY = [
     "🏖️ **{name}** est en congé aujourd'hui ! ({reason}) — back soon ✌️",
     "😴 **{name}** profite de son congé ({reason}). Ne rien attendre de ce côté-là aujourd'hui !",
     "🌴 **{name}** est off ({reason}). Pas de panique, c'est prévu !",
+    "🏖️ **{name}** est en mode vacances ({reason}). On se débrouille sans ! 💪",
+    "🌞 **{name}** est off ({reason}). No stress, tout est sous contrôle.",
 ]
 
 MSG_SESSION_FORGOTTEN_END = [
     "🕐 Hey {name}, il est **{hour}h** et ta session est toujours ouverte ! T'as oublié `/stop` ou tu fais des heures sup ?",
     "🕐 {name}, normalement tu finis à **{hour}h**... Session toujours ouverte ! `/stop` si t'as fini 😉",
     "🕐 {name}, ta journée devait finir à **{hour}h** et t'es encore en mode 'working'. Tu bosses encore ou t'as oublié ?",
+    "🕐 Euh {name}... il est **{hour}h** et t'es toujours connecté·e. Oubli de `/stop` ? 🤔",
+    "🕐 {name}, **{hour}h** passé ! Ta session est fantôme ou tu bosses encore ? `/stop` ou `/pause` ? 👻",
 ]
 
 MSG_SESSION_TOO_LONG = [
     "⚠️ **{name}** a une session ouverte depuis plus de **{hours}** ! C'est sûrement un oubli de `/stop`.",
     "🚨 Session de **{name}** ouverte depuis **{hours}** ! Probablement un oubli.",
     "👀 **{name}** en mode travail depuis **{hours}**... Oubli de `/stop` ?",
+    "⚠️ **{name}** : session ouverte depuis **{hours}**. À vérifier — très probablement un oubli.",
 ]
 
 def pick(messages, **kwargs):
@@ -415,23 +481,56 @@ async def dept_autocomplete(interaction: discord.Interaction, current: str):
 # ─── Progress Channel Helper ────────────────────────────────────────────────
 
 def find_progress_channel(guild, member):
-    """Trouve le canal -progress d'un membre. Cherche par nom d'utilisateur ou display name."""
+    """Trouve le canal -progress d'un membre. Priorité: DB > nom flexible > permissions."""
+    # 1) Cherche dans la DB (lié via /mychannel ou auto-détection)
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT channel_id FROM user_channels WHERE user_id=?", (str(member.id),)).fetchone()
+        if row:
+            ch = guild.get_channel(int(row["channel_id"]))
+            if ch: return ch
+    finally: conn.close()
+    # 2) Matching flexible : le nom du canal CONTIENT le username/display_name + se termine par -progress
     name_lower = member.name.lower()
     display_lower = member.display_name.lower().replace(" ", "-")
     for ch in guild.text_channels:
-        if not ch.name.endswith(PROGRESS_CHANNEL_SUFFIX):
+        ch_lower = ch.name.lower()
+        if not ch_lower.endswith(PROGRESS_CHANNEL_SUFFIX):
             continue
-        prefix = ch.name[:-len(PROGRESS_CHANNEL_SUFFIX)]
-        if prefix == name_lower or prefix == display_lower:
+        # Extrait la partie avant -progress, nettoie les emojis/pipes/tirets
+        raw_prefix = ch_lower[:-len(PROGRESS_CHANNEL_SUFFIX)]
+        # Nettoie: enlève les caractères spéciaux (emoji, |, ┃) et les tirets en trop
+        import re
+        clean = re.sub(r'[^\w-]', '', raw_prefix).strip('-').rstrip('-').lstrip('-')
+        # Supprime les tirets multiples
+        clean = re.sub(r'-+', '-', clean)
+        if clean == name_lower or clean == display_lower:
             return ch
-    # Fallback: cherche un canal progress où le membre a les permissions d'écrire
+        # Fallback: le nom est CONTENU dans le canal
+        if name_lower in ch_lower or display_lower in ch_lower:
+            return ch
+    # 3) Fallback permissions: canal privé où le membre peut écrire
     for ch in guild.text_channels:
-        if ch.name.endswith(PROGRESS_CHANNEL_SUFFIX):
+        if ch.name.lower().endswith(PROGRESS_CHANNEL_SUFFIX):
             perms = ch.permissions_for(member)
-            # Si le canal est privé et le membre y a accès, c'est probablement le sien
             if not ch.permissions_for(guild.default_role).read_messages and perms.send_messages:
                 return ch
     return None
+
+def save_user_channel(user_id, channel_id):
+    """Sauvegarde le lien user → canal progress."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO user_channels (user_id,channel_id,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET channel_id=?,updated_at=?",
+            (str(user_id), str(channel_id), now().isoformat(), str(channel_id), now().isoformat()))
+        conn.commit()
+    finally: conn.close()
+
+def get_admin_channel(guild):
+    """Retourne le canal #time-tracking-admin (ou None)."""
+    return discord.utils.get(guild.text_channels, name=ADMIN_CHANNEL_NAME)
 
 # ─── Timezone Autocomplete ──────────────────────────────────────────────────
 
@@ -568,7 +667,7 @@ async def on_raw_reaction_add(payload):
     guild = bot.get_guild(payload.guild_id)
     if not guild: return
     channel = guild.get_channel(payload.channel_id)
-    if not channel or channel.name != SUMMARY_CHANNEL_NAME:
+    if not channel or channel.name not in (SUMMARY_CHANNEL_NAME, ADMIN_CHANNEL_NAME):
         return
     # Vérifier que c'est un admin
     member = payload.member
@@ -662,6 +761,8 @@ async def on_message(message):
                 reaction = "✅"
             conn.commit()
             await message.add_reaction(reaction)
+            # Auto-lier le canal progress à l'artiste
+            save_user_channel(uid, message.channel.id)
         except Exception as ex:
             print(f"Erreur daily: {ex}")
             try: await message.add_reaction("❌")
@@ -847,6 +948,16 @@ async def cmd_mydays(interaction: discord.Interaction, jours: str):
         await interaction.response.send_message(embed=e, ephemeral=True)
     finally: conn.close()
 
+@bot.tree.command(name="mychannel", description="📌 Lier ton canal progress")
+@app_commands.describe(canal="Le canal à lier (ou laisse vide pour utiliser le canal actuel)")
+async def cmd_mychannel(interaction: discord.Interaction, canal: discord.TextChannel = None):
+    target = canal or interaction.channel
+    if not target.name.lower().endswith(PROGRESS_CHANNEL_SUFFIX):
+        return await interaction.response.send_message(f"⚠️ Ce canal ne se termine pas par `{PROGRESS_CHANNEL_SUFFIX}`. Utilise un canal progress !", ephemeral=True)
+    save_user_channel(interaction.user.id, target.id)
+    e = discord.Embed(title="📌 Canal progress lié !", description=f"**{interaction.user.display_name}** → {target.mention}\n\nTous les rappels iront dans ce canal.", color=0x3498DB)
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
 @bot.tree.command(name="conge", description="🏖️ Demander un congé")
 @app_commands.describe(debut="Date début YYYY-MM-DD", fin="Date fin YYYY-MM-DD (même jour si 1 jour)", raison="Raison")
 async def cmd_conge(interaction: discord.Interaction, debut: str, fin: str, raison: str="Congé"):
@@ -876,9 +987,9 @@ async def cmd_conge(interaction: discord.Interaction, debut: str, fin: str, rais
         e.add_field(name="Raison", value=raison, inline=True)
         e.set_footer(text="En attente de validation admin")
         await interaction.response.send_message(embed=e, ephemeral=True)
-        # Notifier dans #time-tracking avec tag admin + réactions
+        # Notifier dans #time-tracking-admin (ou #time-tracking si pas de canal admin)
         for g in bot.guilds:
-            ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+            ch = get_admin_channel(g) or discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
             if ch:
                 admin_role = discord.utils.get(g.roles, name=ADMIN_ROLE_NAME)
                 admin_ping = admin_role.mention if admin_role else "@Admin"
@@ -887,8 +998,8 @@ async def cmd_conge(interaction: discord.Interaction, debut: str, fin: str, rais
                 ae.add_field(name="Raison", value=raison, inline=True)
                 ae.set_footer(text=f"Congé #{rid} — ✅ pour approuver, ❌ pour refuser")
                 msg = await ch.send(f"{admin_ping} — Nouvelle demande de congé :", embed=ae)
-                await msg.add_reaction("✅")
-                await msg.add_reaction("❌")
+                await msg.add_reaction("✅")  # Pour admin: approuver
+                await msg.add_reaction("❌")  # Pour admin: refuser
     finally: conn.close()
 
 @bot.tree.command(name="edit", description="✏️ Correction d'heures")
@@ -911,7 +1022,7 @@ async def cmd_edit(interaction: discord.Interaction, date: str, debut: str, fin:
         e.add_field(name="Raison", value=raison, inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
         for g in bot.guilds:
-            ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+            ch = get_admin_channel(g) or discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
             if ch:
                 ae = discord.Embed(title=f"✏️ Correction #{rid}", description=f"**{name}**", color=0xF39C12)
                 ae.add_field(name="Date", value=date, inline=True); ae.add_field(name="Heures", value=f"{debut}→{fin}", inline=True)
@@ -1554,9 +1665,9 @@ async def check_forgotten_sessions():
                         except: pass
                     alert_lines.append(pick(MSG_SESSION_TOO_LONG, name=a.display_name, hours=fmt(session_mins)))
 
-            # Notifier l'admin dans #time-tracking
+            # Notifier l'admin dans #time-tracking-admin
             if alert_lines:
-                ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+                ch = get_admin_channel(g) or discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
                 if ch:
                     e = discord.Embed(title="⚠️ Sessions suspectes", description="\n".join(alert_lines), color=0xE74C3C)
                     await ch.send(embed=e)
@@ -1639,7 +1750,7 @@ async def auto_close():
         conn.execute("DELETE FROM snoozes WHERE date=?", (yesterday,)); conn.commit()
         if opens:
             for g in bot.guilds:
-                ch=discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+                ch=get_admin_channel(g) or discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
                 if ch: await ch.send(f"⚠️ Sessions auto-fermées: **{', '.join(s['username'] for s in opens)}**")
     finally: conn.close()
 
@@ -1723,6 +1834,20 @@ async def evening_summary_20h():
             ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
             if ch:
                 await ch.send(embed=e)
+
+            # Admin channel: infos privées (dailies manquants, taux, détails)
+            admin_ch = get_admin_channel(g)
+            if admin_ch and (no_daily or not_started):
+                ae = discord.Embed(title=f"👑 Admin — 20h — {date}", color=0xE74C3C)
+                if no_daily:
+                    ae.add_field(name=f"⚠️ Dailies manquants ({len(no_daily)})", value=", ".join(f"**{n}**" for n in no_daily), inline=False)
+                if not_started:
+                    ae.add_field(name=f"👻 Pas pointé & pas off ({len(not_started)})", value=", ".join(f"**{a.display_name}**" for a in not_started), inline=False)
+                # Sessions encore ouvertes
+                still_open = [s for s in sessions if s["status"] in ("working","paused")]
+                if still_open:
+                    ae.add_field(name=f"🟢 Encore en cours ({len(still_open)})", value="\n".join(f"**{s['username']}** depuis {datetime.fromisoformat(s['start_time']).strftime('%H:%M')}" for s in still_open), inline=False)
+                await admin_ch.send(embed=ae)
 
             # Rappel daily aux retardataires dans leur canal progress
             for a in members:
