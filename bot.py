@@ -848,7 +848,7 @@ async def create_setup_channel(guild: discord.Guild, member: discord.Member) -> 
     # Overwrites : tout le monde ne voit pas, sauf l'artiste et les admins
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        member: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+        member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
     }
     # Donner accès aux admins Discord
