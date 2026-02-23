@@ -6,7 +6,7 @@ Bot Discord complet pour tracker les heures de travail, gérer les congés, les 
 
 ## ⚡ Démarrage rapide
 
-1. Crée le bot sur [discord.com/developers](https://discord.com/developers/applications) (Intents : ✅ Server Members, ✅ Message Content)
+1. Crée le bot sur [discord.com/developers](https://discord.com/developers/applications) (Intents : ✅ Server Members, ✅ Message Content, ✅ Guild Members)
 2. Sur ton serveur Discord, crée :
    - `#time-tracking` — résumés publics (⚠️ les messages non-admin sont auto-supprimés)
    - `#time-tracking-admin` — privé admin (congés, sessions suspectes, alertes)
@@ -20,6 +20,7 @@ Bot Discord complet pour tracker les heures de travail, gérer les congés, les 
 
 | Commande | Description |
 |----------|-------------|
+| `/setup` | 🎓 Configuration guidée en DM (horaires, timezone, pause déj) |
 | `/start` | 🟢 Commencer ta journée |
 | `/stop` | 🔴 Terminer (⚠️ bloqué sans daily !) |
 | `/pause` · `/resume` | ⏸️ Pauses manuelles |
@@ -40,6 +41,21 @@ Bot Discord complet pour tracker les heures de travail, gérer les congés, les 
 | `/mychannel [canal]` | 📌 Lier ton canal progress |
 
 > **📅 Dates** : tu peux écrire `25/02/2026`, `2026-02-25`, ou `25.02.2026` — le bot comprend tout !
+
+### 🎓 Setup guidé (`/setup`)
+
+Lance le tutoriel de configuration en **message privé** avec le bot. En 4 étapes simples :
+1. Tes horaires (Matin / Standard / Après-midi / Manuel)
+2. Ta timezone (Europe, UK, East US, West US)
+3. Ta pause déjeuner (30 / 45 / 60min / Désactivée)
+4. Récap + aide-mémoire des commandes essentielles
+
+**⚠️ Prérequis DM :** le bot t'envoie les étapes en message privé. Si tu ne reçois rien :
+1. Clique sur le **nom du serveur** → **Paramètres → Confidentialité**
+2. Active ✅ **Autoriser les messages privés des membres du serveur**
+3. Refais `/setup`
+
+> Le setup est aussi proposé **automatiquement en DM** quand tu rejoins le serveur (si tu as le rôle `DreamTeam`).
 
 ### Comment poster ton daily
 

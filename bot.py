@@ -26,7 +26,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import View, Button
-import sqlite3, csv, re
+import sqlite3, csv, re, asyncio
 from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 import os
@@ -829,6 +829,386 @@ class MidnightView(View):
             e = discord.Embed(title="🌙 Bonne nuit !", description=f"**{name}** — {fmt(wm)} aujourd'hui\n\n{pick(MSG_STOP)}", color=0x9B59B6)
             await interaction.followup.send(embed=e)
         finally: conn.close()
+
+# ═══════════════════ TUTORIAL / SETUP ═══════════════════════════════════════
+
+# ─── Helper : envoyer un DM avec fallback si bloqué ─────────────────────────
+
+async def send_dm_or_fallback(interaction: discord.Interaction, embed: discord.Embed, view=None, fallback_text: str = None):
+    """Essaie d'envoyer un DM. Si bloqué, répond en éphémère avec instructions."""
+    try:
+        if view:
+            await interaction.user.send(embed=embed, view=view)
+        else:
+            await interaction.user.send(embed=embed)
+        return True
+    except discord.Forbidden:
+        howto = (
+            "📵 **Je n'ai pas pu t'envoyer un message privé !**\n\n"
+            "Pour recevoir des DMs du bot, active l'option dans Discord :\n"
+            "1. Clique sur le **nom du serveur** → **Paramètres**\n"
+            "2. Va dans **Confidentialité**\n"
+            "3. Active ✅ **Autoriser les messages privés des membres du serveur**\n\n"
+            "Puis refais `/setup` 🙂"
+        )
+        e_err = discord.Embed(description=howto, color=0xE74C3C)
+        await interaction.response.send_message(embed=e_err, ephemeral=True)
+        return False
+    except Exception:
+        await interaction.response.send_message("⚠️ Impossible d'envoyer un DM. Réessaie plus tard.", ephemeral=True)
+        return False
+
+
+# ─── Step Views ──────────────────────────────────────────────────────────────
+
+class SetupStep1View(View):
+    """Étape 1 : Choisir ses horaires."""
+    def __init__(self, user_id: str):
+        super().__init__(timeout=600)
+        self.user_id = user_id
+
+    async def _apply(self, interaction: discord.Interaction, start: int, end: int, tz: str):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO user_schedules (user_id,start_hour,end_hour,timezone,work_days) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET start_hour=?,end_hour=?,timezone=?",
+                (self.user_id, start, end, tz, "lundi,mardi,mercredi,jeudi,vendredi", start, end, tz)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _send_setup_step2(interaction.user, start, end, tz)
+
+    @discord.ui.button(label="🌅 Matin (9h–17h)", style=discord.ButtonStyle.primary)
+    async def btn_matin(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 9, 17, "CET")
+
+    @discord.ui.button(label="☀️ Standard (10h–18h)", style=discord.ButtonStyle.primary)
+    async def btn_standard(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 10, 18, "CET")
+
+    @discord.ui.button(label="🌆 Après-midi (12h–20h)", style=discord.ButtonStyle.primary)
+    async def btn_apm(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 12, 20, "CET")
+
+    @discord.ui.button(label="⚙️ Je configure moi-même", style=discord.ButtonStyle.secondary)
+    async def btn_custom(self, interaction: discord.Interaction, button: Button):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        e = discord.Embed(
+            title="⚙️ Configuration manuelle",
+            description=(
+                "Utilise la commande `/myschedule` sur le serveur pour définir tes horaires précis.\n\n"
+                "Exemple : `/myschedule début:9 fin:18 tz:CET`\n\n"
+                "*(On continue le tutoriel avec les valeurs par défaut pour l'instant — tu pourras modifier plus tard !)*"
+            ),
+            color=0xF39C12
+        )
+        await interaction.user.send(embed=e)
+        await _send_setup_step2(interaction.user, 10, 18, "CET")
+
+
+class SetupStep2View(View):
+    """Étape 2 : Choisir sa timezone."""
+    def __init__(self, user_id: str, start: int, end: int, tz: str):
+        super().__init__(timeout=600)
+        self.user_id = user_id
+        self.start = start
+        self.end = end
+        self.tz = tz
+
+    async def _apply(self, interaction: discord.Interaction, new_tz: str):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO user_schedules (user_id,start_hour,end_hour,timezone,work_days) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET timezone=?",
+                (self.user_id, self.start, self.end, new_tz, "lundi,mardi,mercredi,jeudi,vendredi", new_tz)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _send_setup_step3(interaction.user, self.start, self.end, new_tz)
+
+    @discord.ui.button(label="🇪🇺 Europe (CET/CEST)", style=discord.ButtonStyle.primary)
+    async def btn_cet(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, "CET")
+
+    @discord.ui.button(label="🇬🇧 UK (GMT/BST)", style=discord.ButtonStyle.primary)
+    async def btn_gmt(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, "GMT")
+
+    @discord.ui.button(label="🗽 East US (EST/EDT)", style=discord.ButtonStyle.primary)
+    async def btn_est(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, "EST")
+
+    @discord.ui.button(label="🌴 West US (PST/PDT)", style=discord.ButtonStyle.primary)
+    async def btn_pst(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, "PST")
+
+
+class SetupStep3View(View):
+    """Étape 3 : Pause déjeuner."""
+    def __init__(self, user_id: str, start: int, end: int, tz: str):
+        super().__init__(timeout=600)
+        self.user_id = user_id
+        self.start = start
+        self.end = end
+        self.tz = tz
+
+    async def _apply(self, interaction: discord.Interaction, minutes: int):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO user_schedules (user_id,start_hour,end_hour,timezone,work_days,lunch_minutes) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET lunch_minutes=?",
+                (self.user_id, self.start, self.end, self.tz, "lundi,mardi,mercredi,jeudi,vendredi", minutes, minutes)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _send_setup_step4(interaction.user, self.start, self.end, self.tz)
+
+    @discord.ui.button(label="🍽️ 1h (défaut)", style=discord.ButtonStyle.primary)
+    async def btn_60(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 60)
+
+    @discord.ui.button(label="⏱️ 45min", style=discord.ButtonStyle.secondary)
+    async def btn_45(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 45)
+
+    @discord.ui.button(label="⏱️ 30min", style=discord.ButtonStyle.secondary)
+    async def btn_30(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 30)
+
+    @discord.ui.button(label="🚫 Pas de déduction auto", style=discord.ButtonStyle.danger)
+    async def btn_none(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 0)
+
+
+class SetupStep4View(View):
+    """Étape 4 : Résumé + lancer la journée test."""
+    def __init__(self, user_id: str):
+        super().__init__(timeout=600)
+        self.user_id = user_id
+
+    @discord.ui.button(label="🚀 J'ai compris, allons-y !", style=discord.ButtonStyle.green)
+    async def btn_go(self, interaction: discord.Interaction, button: Button):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _send_setup_done(interaction.user)
+
+    @discord.ui.button(label="🔁 Recommencer le setup", style=discord.ButtonStyle.secondary)
+    async def btn_restart(self, interaction: discord.Interaction, button: Button):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await _send_setup_step1(interaction.user)
+
+
+# ─── Step senders ─────────────────────────────────────────────────────────────
+
+async def _send_setup_step1(user: discord.User):
+    e = discord.Embed(
+        title="👋 Bienvenue sur le Time Tracker ! — Étape 1/4",
+        description=(
+            "Ce petit setup va prendre **1 minute** et tu n'auras plus à y revenir.\n\n"
+            "**🕐 Quels sont tes horaires habituels ?**\n"
+            "*(Tu pourras toujours affiner avec `/myschedule` plus tard)*"
+        ),
+        color=0x3498DB
+    )
+    e.set_footer(text="Mooncake Time Tracker · Setup guidé")
+    await user.send(embed=e, view=SetupStep1View(str(user.id)))
+
+
+async def _send_setup_step2(user: discord.User, start: int, end: int, tz: str):
+    e = discord.Embed(
+        title="🌍 Étape 2/4 — Ta timezone",
+        description=(
+            f"Horaires enregistrés : **{start}h → {end}h** ✅\n\n"
+            "**Dans quel fuseau horaire tu travailles ?**\n"
+            "*(Le changement heure été/hiver est géré automatiquement)*"
+        ),
+        color=0x3498DB
+    )
+    e.set_footer(text="Mooncake Time Tracker · Setup guidé")
+    await user.send(embed=e, view=SetupStep2View(str(user.id), start, end, tz))
+
+
+async def _send_setup_step3(user: discord.User, start: int, end: int, tz: str):
+    e = discord.Embed(
+        title="🍽️ Étape 3/4 — Pause déjeuner",
+        description=(
+            f"Timezone enregistrée : **{tz}** ✅\n\n"
+            "**Combien de temps pour ta pause déj ?**\n\n"
+            "Si ta session dépasse **6h** et que tu n'as pas fait `/pause` toi-même, "
+            "cette durée sera automatiquement déduite de ton temps de travail."
+        ),
+        color=0x3498DB
+    )
+    e.set_footer(text="Mooncake Time Tracker · Setup guidé")
+    await user.send(embed=e, view=SetupStep3View(str(user.id), start, end, tz))
+
+
+async def _send_setup_step4(user: discord.User, start: int, end: int, tz: str):
+    conn = get_db()
+    try:
+        sched = conn.execute("SELECT * FROM user_schedules WHERE user_id=?", (str(user.id),)).fetchone()
+        lunch = sched["lunch_minutes"] if sched and sched["lunch_minutes"] is not None else 60
+    finally:
+        conn.close()
+    lunch_txt = f"{lunch}min" if lunch > 0 else "Désactivée"
+    e = discord.Embed(
+        title="✅ Étape 4/4 — C'est tout bon !",
+        description=(
+            f"**Récap de ta config :**\n"
+            f"🕐 Horaires : **{start}h → {end}h**\n"
+            f"🌍 Timezone : **{tz}**\n"
+            f"🍽️ Pause déj auto : **{lunch_txt}**\n\n"
+            "**📚 Les commandes essentielles à connaître :**\n"
+            "▸ `/start` — Commencer ta journée\n"
+            "▸ `/stop` — Terminer *(bloqué sans daily !)*\n"
+            "▸ `/pause` / `/resume` — Gérer tes pauses\n"
+            "▸ `/status` — Voir où tu en es\n"
+            "▸ `/myreport` — Tes heures du mois\n\n"
+            "**📝 Le daily :**\n"
+            "Poste dans ton canal `-progress` avec **#daily** dans le message.\n"
+            "Sans ça, `/stop` sera bloqué !\n\n"
+            "**✏️ Commandes de config :**\n"
+            "▸ `/myschedule` — Modifier horaires/timezone\n"
+            "▸ `/mydays` — Jours de travail\n"
+            "▸ `/mylunch` — Changer la pause déj\n"
+            "▸ `/mychannel` — Lier ton canal progress\n\n"
+            "*Tu peux refaire `/setup` à tout moment pour changer ta config.*"
+        ),
+        color=0x2ECC71
+    )
+    e.set_footer(text="Mooncake Time Tracker · Setup terminé 🎉")
+    await user.send(embed=e, view=SetupStep4View(str(user.id)))
+
+
+async def _send_setup_done(user: discord.User):
+    e = discord.Embed(
+        title="🎉 Prêt·e à tracker !",
+        description=(
+            "Tu es configuré·e. Retourne sur le serveur et tape `/start` pour commencer ta journée !\n\n"
+            "Si tu as des questions, demande à un admin ou refais `/setup` pour revoir la config.\n\n"
+            "Bonne journée 🚀"
+        ),
+        color=0x2ECC71
+    )
+    await user.send(embed=e)
+
+
+# ─── Commande /setup ─────────────────────────────────────────────────────────
+
+@bot.tree.command(name="setup", description="🎓 Configuration guidée en DM (horaires, timezone, pause déj)")
+async def cmd_setup(interaction: discord.Interaction):
+    """Lance le tutoriel de setup en DM."""
+    # Accusé de réception immédiat (Discord exige une réponse en <3s)
+    await interaction.response.send_message(
+        "📬 Je t'envoie les instructions en DM ! Vérifie tes messages privés 😊",
+        ephemeral=True
+    )
+    try:
+        await _send_setup_step1(interaction.user)
+    except discord.Forbidden:
+        howto = (
+            "📵 **Je n'ai pas pu t'envoyer un message privé !**\n\n"
+            "Pour recevoir des DMs du bot, active l'option dans Discord :\n"
+            "1. Clique sur le **nom du serveur** (en haut à gauche)\n"
+            "2. Va dans **Paramètres → Confidentialité**\n"
+            "3. Active ✅ **Autoriser les messages privés des membres du serveur**\n\n"
+            "Puis refais `/setup` ici 🙂"
+        )
+        e_err = discord.Embed(description=howto, color=0xE74C3C)
+        await interaction.followup.send(embed=e_err, ephemeral=True)
+    except Exception:
+        await interaction.followup.send("⚠️ Impossible d'envoyer un DM. Réessaie plus tard.", ephemeral=True)
+
+
+# ─── on_member_join : propose le setup automatiquement ───────────────────────
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Quand un nouveau membre rejoint, propose le setup en DM s'il a le rôle DreamTeam."""
+    # On attend un peu pour laisser les rôles s'assigner (webhooks, bots de roles, etc.)
+    await asyncio.sleep(3)
+    # Re-fetch pour avoir les rôles à jour
+    try:
+        member = await member.guild.fetch_member(member.id)
+    except Exception:
+        return
+    has_team_role = any(r.name == TEAM_ROLE_NAME for r in member.roles)
+    if not has_team_role:
+        return  # Pas un artiste du studio, on ne spamme pas
+    try:
+        e = discord.Embed(
+            title=f"👋 Bienvenue {member.display_name} !",
+            description=(
+                f"Tu viens de rejoindre **{member.guild.name}**.\n\n"
+                "Je suis le bot de time tracking du studio 🤖\n"
+                "Je t'aide à tracker tes heures, poster tes dailies et gérer tes congés.\n\n"
+                "**Avant de commencer, configure tes horaires en 1 minute :**\n"
+                "Clique sur le bouton ci-dessous ou tape `/setup` sur le serveur."
+            ),
+            color=0x3498DB
+        )
+        e.set_footer(text="Mooncake Time Tracker · Bienvenue !")
+        view = View(timeout=86400)  # 24h
+
+        class StartSetupButton(Button):
+            def __init__(self):
+                super().__init__(label="🚀 Démarrer le setup", style=discord.ButtonStyle.green)
+            async def callback(self, interaction: discord.Interaction):
+                for item in self.view.children:
+                    item.disabled = True
+                await interaction.response.edit_message(view=self.view)
+                await _send_setup_step1(interaction.user)
+
+        view.add_item(StartSetupButton())
+        await member.send(embed=e, view=view)
+    except discord.Forbidden:
+        # DMs bloqués : on envoie un message dans le canal progress s'il existe
+        for g in bot.guilds:
+            pch = find_progress_channel(g, member)
+            if pch:
+                try:
+                    await pch.send(
+                        f"👋 Bienvenue {member.mention} ! Pour te configurer, tape `/setup` ici.\n"
+                        f"*(Active les DMs du serveur dans tes paramètres Discord pour recevoir le tutoriel en privé !)*"
+                    )
+                except Exception:
+                    pass
+                break
+    except Exception:
+        pass
+
 
 # ═══════════════════ REACTION-BASED CONGÉ APPROVAL ═══════════════════════════
 
