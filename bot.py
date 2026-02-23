@@ -890,19 +890,26 @@ class SetupStep1View(View):
     async def _apply(self, interaction: discord.Interaction, start: int, end: int, tz: str):
         if str(interaction.user.id) != self.user_id:
             return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
-        conn = get_db()
         try:
-            conn.execute(
-                "INSERT INTO user_schedules (user_id,start_hour,end_hour,timezone,work_days) VALUES (?,?,?,?,?) "
-                "ON CONFLICT(user_id) DO UPDATE SET start_hour=?,end_hour=?,timezone=?",
-                (self.user_id, start, end, tz, "lundi,mardi,mercredi,jeudi,vendredi", start, end, tz)
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(view=self)
-        await _send_setup_step2(self.channel, interaction.user, start, end, tz)
+            conn = get_db()
+            try:
+                conn.execute(
+                    "INSERT INTO user_schedules (user_id,start_hour,end_hour,tz,work_days) VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET start_hour=?,end_hour=?,tz=?",
+                    (self.user_id, start, end, tz, "lundi,mardi,mercredi,jeudi,vendredi", start, end, tz)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            for item in self.children: item.disabled = True
+            await interaction.response.edit_message(view=self)
+            await _send_setup_step2(self.channel, interaction.user, start, end, tz)
+        except Exception as ex:
+            print(f"[SETUP Step1 ERROR] {ex}")
+            try:
+                await interaction.response.send_message(f"⚠️ Erreur : `{ex}`", ephemeral=True)
+            except Exception:
+                pass
 
     @discord.ui.button(label="🌅 Matin (9h–17h)", style=discord.ButtonStyle.primary)
     async def btn_matin(self, interaction: discord.Interaction, button: Button):
@@ -950,19 +957,26 @@ class SetupStep2View(View):
     async def _apply(self, interaction: discord.Interaction, new_tz: str):
         if str(interaction.user.id) != self.user_id:
             return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
-        conn = get_db()
         try:
-            conn.execute(
-                "INSERT INTO user_schedules (user_id,start_hour,end_hour,timezone,work_days) VALUES (?,?,?,?,?) "
-                "ON CONFLICT(user_id) DO UPDATE SET timezone=?",
-                (self.user_id, self.start, self.end, new_tz, "lundi,mardi,mercredi,jeudi,vendredi", new_tz)
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(view=self)
-        await _send_setup_step3(self.channel, interaction.user, self.start, self.end, new_tz)
+            conn = get_db()
+            try:
+                conn.execute(
+                    "INSERT INTO user_schedules (user_id,start_hour,end_hour,tz,work_days) VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET tz=?",
+                    (self.user_id, self.start, self.end, new_tz, "lundi,mardi,mercredi,jeudi,vendredi", new_tz)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            for item in self.children: item.disabled = True
+            await interaction.response.edit_message(view=self)
+            await _send_setup_step3(self.channel, interaction.user, self.start, self.end, new_tz)
+        except Exception as ex:
+            print(f"[SETUP Step2 ERROR] {ex}")
+            try:
+                await interaction.response.send_message(f"⚠️ Erreur : `{ex}`", ephemeral=True)
+            except Exception:
+                pass
 
     @discord.ui.button(label="🇪🇺 Europe (CET/CEST)", style=discord.ButtonStyle.primary)
     async def btn_cet(self, interaction: discord.Interaction, button: Button):
@@ -997,19 +1011,26 @@ class SetupStep3View(View):
     async def _apply(self, interaction: discord.Interaction, minutes: int):
         if str(interaction.user.id) != self.user_id:
             return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
-        conn = get_db()
         try:
-            conn.execute(
-                "INSERT INTO user_schedules (user_id,start_hour,end_hour,timezone,work_days,lunch_minutes) VALUES (?,?,?,?,?,?) "
-                "ON CONFLICT(user_id) DO UPDATE SET lunch_minutes=?",
-                (self.user_id, self.start, self.end, self.tz, "lundi,mardi,mercredi,jeudi,vendredi", minutes, minutes)
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(view=self)
-        await _send_setup_step4(self.channel, interaction.user, self.start, self.end, self.tz)
+            conn = get_db()
+            try:
+                conn.execute(
+                    "INSERT INTO user_schedules (user_id,start_hour,end_hour,tz,work_days,lunch_minutes) VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET lunch_minutes=?",
+                    (self.user_id, self.start, self.end, self.tz, "lundi,mardi,mercredi,jeudi,vendredi", minutes, minutes)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            for item in self.children: item.disabled = True
+            await interaction.response.edit_message(view=self)
+            await _send_setup_step4(self.channel, interaction.user, self.start, self.end, self.tz)
+        except Exception as ex:
+            print(f"[SETUP Step3 ERROR] {ex}")
+            try:
+                await interaction.response.send_message(f"⚠️ Erreur : `{ex}`", ephemeral=True)
+            except Exception:
+                pass
 
     @discord.ui.button(label="🍽️ 1h (défaut)", style=discord.ButtonStyle.primary)
     async def btn_60(self, interaction: discord.Interaction, button: Button):
