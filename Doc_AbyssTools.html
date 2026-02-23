@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Abyss Tools Documentation</title>
+    <style>
+        :root {
+            --bg-dark: #1e1e1e;
+            --bg-panel: #2b2b2b;
+            --text-main: #e0e0e0;
+            --text-muted: #aaaaaa;
+            --accent: #5dade2;
+            --highlight: #f39c12;
+            --success: #27ae60;
+            --purple: #8e44ad;
+            --code-bg: #151515;
+            --discord: #5865F2;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        nav {
+            width: 250px;
+            background-color: #111;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #333;
+            padding-top: 20px;
+        }
+
+        nav h1 {
+            text-align: center;
+            font-size: 1.2em;
+            color: var(--accent);
+            margin-bottom: 30px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .nav-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            padding: 15px 25px;
+            text-align: left;
+            cursor: pointer;
+            font-size: 1em;
+            transition: 0.2s;
+            border-left: 4px solid transparent;
+        }
+
+        .nav-btn:hover {
+            background-color: #222;
+            color: white;
+        }
+
+        .nav-btn.active {
+            background-color: var(--bg-panel);
+            color: white;
+            border-left: 4px solid var(--accent);
+            font-weight: bold;
+        }
+
+        main {
+            flex: 1;
+            padding: 40px;
+            overflow-y: auto;
+            background-color: var(--bg-panel);
+        }
+
+        .page {
+            display: none;
+            max-width: 900px;
+            margin: 0 auto;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .page.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        h2 { border-bottom: 1px solid #444; padding-bottom: 10px; color: white; }
+        h3 { color: var(--accent); margin-top: 30px; }
+
+        .screenshot-container {
+            text-align: center;
+            background-color: #1a1a1a;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border: 1px solid #444;
+        }
+        
+        .screenshot-container img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            display: block;
+            margin: 0 auto;
+        }
+
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; background-color: #222; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
+        th { color: var(--accent); }
+        
+        code {
+            font-family: 'Consolas', monospace;
+            background-color: var(--code-bg);
+            padding: 3px 6px;
+            border-radius: 4px;
+            color: #ff7675;
+        }
+
+        .channel-row { display: flex; align-items: center; margin-bottom: 8px; font-family: monospace; font-size: 1.1em; }
+        .dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; display: inline-block; }
+        
+        .feature-list li { margin-bottom: 10px; }
+        .key-concept { color: var(--highlight); font-weight: bold; }
+
+        .cmd-table td:first-child { white-space: nowrap; }
+        .cmd-table code { color: #7289da; background-color: #1a1a2e; }
+        
+        .workflow-step {
+            display: flex;
+            align-items: flex-start;
+            gap: 15px;
+            margin: 15px 0;
+            padding: 15px;
+            background: #222;
+            border-radius: 8px;
+            border-left: 4px solid var(--accent);
+        }
+        .workflow-step .step-num {
+            background: var(--accent);
+            color: #111;
+            font-weight: bold;
+            min-width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .role-badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: bold;
+            margin: 0 2px;
+        }
+        .role-admin { background: #e74c3c33; color: #e74c3c; border: 1px solid #e74c3c55; }
+        .role-artist { background: #9b59b633; color: #b97bdb; border: 1px solid #9b59b655; }
+
+        .auto-card {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            border: 1px solid #334;
+            border-radius: 8px;
+            padding: 18px;
+            margin: 12px 0;
+        }
+        .auto-card strong { color: var(--highlight); }
+        .auto-card .auto-time { color: var(--accent); font-family: monospace; font-size: 1.1em; }
+
+        .section-divider {
+            border: none;
+            border-top: 1px solid #444;
+            margin: 35px 0;
+        }
+
+        .admin-link {
+            display: inline-block;
+            background: linear-gradient(135deg, #e74c3c33, #c0392b33);
+            border: 1px solid #e74c3c55;
+            color: #e74c3c;
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+            margin: 10px 0;
+            transition: 0.2s;
+        }
+        .admin-link:hover { background: #e74c3c44; color: #fff; }
+    </style>
+</head>
+<body>
+
+    <nav>
+        <h1>Abyss Tools</h1>
+        <button class="nav-btn active" onclick="showPage('autoshad')">1. Auto Shader Tool</button>
+        <button class="nav-btn" onclick="showPage('nomenclature')">2. Nomenclature (Texture)</button>
+        <button class="nav-btn" onclick="showPage('palette')">3. Smart Palette</button>
+        <button class="nav-btn" onclick="showPage('timebot')">4. Time Tracker 🎨</button>
+    </nav>
+
+    <main>
+
+        <!-- ═══════════════════════ PAGE 1: AUTO SHADER ═══════════════════════ -->
+
+        <div id="autoshad" class="page active">
+            <h2>🚀 Auto Shader Tool</h2>
+            <p>L'outil principal pour importer vos assets dans Maya. Il gère la conversion, le nettoyage, le shading automatique et la configuration ACES.</p>
+
+            <div class="screenshot-container">
+                <img src="images/AutoShad.png" alt="Interface AutoShader">
+                <p style="font-size:0.8em; color:#666;">Interface Principale v10</p>
+            </div>
+
+            <h3>Fonctionnalités Clés</h3>
+            <ul class="feature-list">
+                <li><strong>Import Multi-Formats :</strong> Accepte les fichiers <code>.glb</code> (Rodin/IA), <code>.fbx</code> et même les images <code>.png</code> (crée un plan 3D automatiquement).</li>
+                <li><strong>Conversion Invisible :</strong> Utilise Blender en arrière-plan pour convertir les fichiers GLB complexes en FBX propres pour Maya.</li>
+                <li><strong>Auto-Shading :</strong> Scanne le dossier source, détecte les textures (BaseColor, Normal, Roughness, etc.) et crée un réseau <strong>Arnold Standard Surface</strong> complet.</li>
+                <li><strong>ACES Ready :</strong> Configure automatiquement les espaces colorimétriques (sRGB pour la couleur, Raw pour les maps techniques).</li>
+            </ul>
+
+            <h3>Comment l'utiliser ?</h3>
+            <ol>
+                <li><strong>References Project :</strong> Utilisez les boutons violets pour importer le LightRig ou le personnage Gloops en un clic.</li>
+                <li><strong>Import :</strong> 
+                    <ul>
+                        <li>Cochez "Auto-Shading après Import".</li>
+                        <li>Cliquez sur le bouton orange <strong>IMPORTER</strong>.</li>
+                        <li>Sélectionnez votre fichier. Laissez le script travailler (barre de chargement).</li>
+                    </ul>
+                </li>
+                <li><strong>Shading Manuel :</strong> Si vous avez déjà l'objet, sélectionnez le dossier de textures dans le champ "Chemin des textures" et cliquez sur le bouton bleu en bas.</li>
+            </ol>
+        </div>
+
+        <!-- ═══════════════════════ PAGE 2: NOMENCLATURE ═══════════════════════ -->
+
+        <div id="nomenclature" class="page">
+            <h2>📜 Nomenclature des Textures</h2>
+            <p>Pour que l'AutoShader fonctionne "magiquement", les fichiers de textures doivent impérativement suivre ces règles de nommage.</p>
+
+            <div style="background:#222; padding:20px; border-left:4px solid var(--highlight); margin: 20px 0;">
+                <code>NomAsset_Suffixe.UDIM.Extension</code>
+            </div>
+
+            <h3>Les Suffixes Requis</h3>
+            <table>
+                <thead><tr><th>Type de Map</th><th>Suffixe Exact</th><th>Usage</th></tr></thead>
+                <tbody>
+                    <tr><td>Albedo / Couleur</td><td><code>_BaseColor</code></td><td>Couleur diffuse (sRGB)</td></tr>
+                    <tr><td>Normal Map</td><td><code>_Normal</code></td><td>Détails de relief (Raw)</td></tr>
+                    <tr><td><strong>Packed Map</strong></td><td><code>_RGBA</code></td><td>Roughness + Metal + SSS (Raw)</td></tr>
+                    <tr><td>Displacement</td><td><code>_DS</code></td><td>Hauteur / Height (32bit EXR)</td></tr>
+                    <tr><td>Emission</td><td><code>_Emit</code></td><td>Lumière (sRGB)</td></tr>
+                </tbody>
+            </table>
+
+            <h3>La Map "Packed" (_RGBA)</h3>
+            <p>Nous utilisons une texture optimisée qui combine 3 canaux en un seul fichier :</p>
+            <div style="background:#151515; padding:20px; border-radius:8px;">
+                <div class="channel-row"><span class="dot" style="background:#ff5555;"></span> <strong>Red</strong> &nbsp; ➔ Roughness</div>
+                <div class="channel-row"><span class="dot" style="background:#55ff55;"></span> <strong>Green</strong> ➔ Metalness</div>
+                <div class="channel-row"><span class="dot" style="background:#5555ff;"></span> <strong>Blue</strong> &nbsp;➔ SSS (Subsurface)</div>
+            </div>
+        </div>
+
+        <!-- ═══════════════════════ PAGE 3: SMART PALETTE ═══════════════════════ -->
+
+        <div id="palette" class="page">
+            <h2>🎨 Smart Material Palette</h2>
+            <p>L'outil ultime pour le <strong>Set Dressing</strong> et le <strong>Blocking</strong>. Il permet d'assigner rapidement des couleurs et des matériaux "Cartoon" cohérents.</p>
+
+            <div class="screenshot-container">
+                <img src="images/Palette.png" alt="Interface Palette">
+            </div>
+
+            <h3>Fonctionnement</h3>
+            <ol>
+                <li><strong>Choisir le Type :</strong> Sélectionnez <em>Plastic</em> (Standard), <em>Metal</em> (Brillant/Satiné) ou <em>Soft</em> (Matte/Gomme) en haut.</li>
+                <li><strong>Assigner :</strong> Sélectionnez vos objets (Mesh ou Curve) et cliquez sur une couleur dans la grille.</li>
+                <li><strong>Viewport vs Rendu :</strong> Le script crée un shader hybride : un <strong>Blinn</strong> optimisé pour le viewport et un <strong>Arnold Standard</strong> correct pour le rendu.</li>
+            </ol>
+
+            <h3>Outils Avancés</h3>
+            <ul>
+                <li><span class="key-concept">Random Color :</span> Applique une couleur différente au hasard sur chaque objet sélectionné.</li>
+                <li><span class="key-concept">Update Scene :</span> Met à jour tous les shaders existants sans perdre les assignations.</li>
+                <li><span class="key-concept">Merge Duplicates :</span> Fusionne les shaders identiques.</li>
+                <li><span class="key-concept">Custom Colors :</span> Importez/Exportez vos palettes via [IMP]/[EXP].</li>
+            </ul>
+        </div>
+
+        <!-- ═══════════════════════ PAGE 4: TIME TRACKER (ARTISTE) ═══════════════════════ -->
+
+        <div id="timebot" class="page">
+            <h2>🕐 Discord Time Tracker</h2>
+            <p>Pointage, pauses, dailies visuels, congés, rappels intelligents — le tout dans Discord.</p>
+
+            <a href="Doc_AbyssTools_Admin.html" class="admin-link">👑 Documentation Admin →</a>
+
+            <hr class="section-divider">
+
+            <!-- ─── WORKFLOW ─── -->
+            <h3>Workflow Journalier</h3>
+
+            <div class="workflow-step">
+                <div class="step-num">1</div>
+                <div>
+                    <strong style="color:var(--success);">/start</strong> — Tu pointes. Le bot affiche ton rôle, département et un message fun.
+                </div>
+            </div>
+            <div class="workflow-step">
+                <div class="step-num">2</div>
+                <div>
+                    <strong style="color:var(--highlight);">/pause</strong> &amp; <strong style="color:var(--success);">/resume</strong> — Pauses manuelles (déduites auto). La <strong>pause déjeuner</strong> (1h par défaut) est déduite automatiquement si tu ne fais pas de /pause de 30min+.
+                </div>
+            </div>
+            <div class="workflow-step">
+                <div class="step-num">3</div>
+                <div>
+                    <strong style="color:#1abc9c;">Daily dans ton canal -progress</strong> — Poste ton avancement avec le mot-clé <code style="color:#1abc9c; background:#1a2e2e;">#daily</code>.
+                    <div style="background:#1a1a2e; padding:12px; border-radius:6px; margin-top:8px; font-size:0.9em;">
+                        <strong style="color:var(--text-muted);">#maria-progress</strong><br>
+                        <span>Finalisé le shading du décor forêt + retouches normal map #daily</span><br>
+                        <span style="color:#666; font-size:0.85em;">📎 image.png · 🎬 video.mp4</span><br>
+                        <span style="font-size:0.85em;">→ Bot réagit ✅ · le lien apparaît dans les résumés</span>
+                    </div>
+                    <div style="background:#2a1a1a; padding:10px; border-radius:6px; margin-top:8px; border:1px solid #e74c3c44;">
+                        ⚠️ <strong>N'écris PAS dans <code>#time-tracking</code></strong> — ce canal est réservé au bot. Tes messages y seront supprimés automatiquement.
+                    </div>
+                </div>
+            </div>
+            <div class="workflow-step">
+                <div class="step-num">4</div>
+                <div>
+                    <strong style="color:#e74c3c;">/stop</strong> — Fin de journée. Récap heures payées, overtime, streak. <strong>⚠️ Bloqué si pas de daily !</strong>
+                </div>
+            </div>
+
+            <hr class="section-divider">
+
+            <!-- ─── COMMANDES ─── -->
+            <h3>Tes Commandes</h3>
+            <table class="cmd-table">
+                <thead><tr><th>Commande</th><th>Description</th></tr></thead>
+                <tbody>
+                    <tr><td><code>/start</code></td><td>🟢 Commencer ta journée</td></tr>
+                    <tr><td><code>/stop</code></td><td>🔴 Terminer. <strong>⚠️ Bloqué sans daily !</strong></td></tr>
+                    <tr><td><code>/pause</code> · <code>/resume</code></td><td>⏸️ Pauses manuelles</td></tr>
+                    <tr><td><code>/off [raison] [date]</code></td><td>🏖️ Jour off</td></tr>
+                    <tr><td><code>/conge [début] [fin] [raison]</code></td><td>🏖️ Demander un congé</td></tr>
+                    <tr><td><code>/edit [date] [début] [fin] [raison]</code></td><td>✏️ Correction d'heures (soumis à validation)</td></tr>
+                    <tr><td><code>/status</code></td><td>📊 Ton statut actuel</td></tr>
+                    <tr><td><code>/myreport [mois] [année]</code></td><td>📈 Tes heures + montant estimé</td></tr>
+                    <tr><td><code>/mydailies [mois] [année]</code></td><td>📖 Historique dailies</td></tr>
+                </tbody>
+            </table>
+
+            <h3>⚙️ Ta Config Perso</h3>
+            <table class="cmd-table">
+                <thead><tr><th>Commande</th><th>Description</th></tr></thead>
+                <tbody>
+                    <tr><td><code>/myschedule [début] [fin] [tz]</code></td><td>🕐 Horaires + timezone (ex: <code>/myschedule 9 18 CET</code>)</td></tr>
+                    <tr><td><code>/mydays [jours]</code></td><td>📆 Jours de travail (ex: <code>lundi,mardi,mercredi,jeudi,vendredi</code>)</td></tr>
+                    <tr><td><code>/mylunch [minutes]</code></td><td>🍽️ Pause déjeuner (défaut: 60min, 0 = désactivé)</td></tr>
+                    <tr><td><code>/mychannel [canal]</code></td><td>📌 Lier ton canal progress manuellement</td></tr>
+                </tbody>
+            </table>
+
+            <div style="background:#1a2e1a; padding:12px; border-radius:8px; margin:15px 0; border:1px solid #27ae6044;">
+                📅 <strong>Dates flexibles</strong> — tu peux écrire <code>25/02/2026</code>, <code>2026-02-25</code>, ou <code>25.02.2026</code>. Le bot comprend tout !
+            </div>
+
+            <hr class="section-divider">
+
+            <!-- ─── LUNCH ─── -->
+            <h3>🍽️ Pause Déjeuner Auto</h3>
+            <div style="background:#222; padding:20px; border-radius:8px; margin:15px 0; border:1px solid #444;">
+                <p style="margin:0 0 8px;">Par défaut, <strong>1h</strong> est déduite automatiquement si ta session > 6h.</p>
+                <p style="margin:0 0 8px;">Si tu fais <code>/pause</code> de 30min+ toi-même → <strong>pas de déduction auto</strong> (le bot considère que tu as géré).</p>
+                <p style="margin:0 0 8px;">Configure avec <code>/mylunch 45</code> (45min) ou <code>/mylunch 0</code> (désactivé).</p>
+                <div style="background:#1a1a2e; padding:10px; border-radius:6px; margin-top:10px; font-size:0.9em;">
+                    <strong>Exemple :</strong> /start à 9h, /stop à 18h, pas de /pause<br>
+                    → Brut: 9h — Lunch auto: -1h → <strong>Payé: 8h</strong>
+                </div>
+            </div>
+
+            <hr class="section-divider">
+
+            <!-- ─── STREAK & OVERTIME ─── -->
+            <h3>🔥 Streak & ⏰ Overtime</h3>
+            <div style="background:#222; padding:20px; border-radius:8px; margin:15px 0; border:1px solid #444;">
+                <p style="margin:0 0 10px;"><strong>🔥 Streak</strong> = jours consécutifs de daily. Visible dans <code>/stop</code> :</p>
+                <div style="display:flex; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+                    <span style="background:#333; padding:5px 12px; border-radius:4px;">📝 2+ jours</span>
+                    <span style="background:#333; padding:5px 12px; border-radius:4px;">⭐ 3+ jours</span>
+                    <span style="background:#333; padding:5px 12px; border-radius:4px;">🔥 5+ jours</span>
+                </div>
+                <p style="margin:0 0 5px;">Les weekends et jours off ne cassent pas le streak !</p>
+                <p style="margin:10px 0 0;"><strong>⏰ Overtime</strong> = tout au-delà de 8h/jour (après lunch). Affiché séparément dans <code>/stop</code>, résumés, et rapports CSV.</p>
+            </div>
+
+            <hr class="section-divider">
+
+            <!-- ─── CONGÉ ─── -->
+            <h3>🏖️ Demander un Congé</h3>
+            <div style="background:#222; padding:20px; border-radius:8px; margin:15px 0; border:1px solid #444;">
+                <div style="margin-bottom:8px;"><code>/conge 14/04/2026 18/04/2026 "Vacances famille"</code></div>
+                <div style="color:var(--text-muted); font-size:0.9em;">
+                    → Le bot poste dans <code>#time-tracking-admin</code> avec @Admin tagué + ✅ ❌<br>
+                    → L'admin (ou ton Lead/Supervisor) réagit ✅ ou ❌<br>
+                    → Tu reçois la réponse dans ton canal progress<br>
+                    → Le matin de tes congés, message rappelle que tu es off
+                </div>
+            </div>
+
+            <hr class="section-divider">
+
+            <!-- ─── RAPPELS ─── -->
+            <h3>🔔 Ce que le Bot fait pour toi</h3>
+            <p>Tous les rappels vont dans <strong>ton canal -progress</strong> (pas en DM).</p>
+
+            <div class="auto-card">
+                <strong>Rappel du matin</strong> <span class="auto-time" style="float:right;">+1h</span>
+                <p style="margin:5px 0 0; color:var(--text-muted);">1h après ton heure de début, si t'as pas pointé. Boutons :</p>
+                <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+                    <span style="background:#2ecc71; color:#fff; padding:5px 14px; border-radius:4px; font-size:0.9em; font-weight:bold;">🟢 Je suis LIVE</span>
+                    <span style="background:#555; color:#fff; padding:5px 14px; border-radius:4px; font-size:0.9em;">🏖️ Je suis OFF</span>
+                    <span style="background:#5865F2; color:#fff; padding:5px 14px; border-radius:4px; font-size:0.9em;">⏰ En retard</span>
+                </div>
+            </div>
+            <div class="auto-card">
+                <strong>Rappel daily</strong> <span class="auto-time" style="float:right;">+7h / 20h</span>
+                <p style="margin:5px 0 0; color:var(--text-muted);">Rappel doux à +7h de ton début, insistant à 20h. Sans daily, <code>/stop</code> est bloqué.</p>
+            </div>
+            <div class="auto-card">
+                <strong>Session oubliée</strong> <span class="auto-time" style="float:right;">fin de journée</span>
+                <p style="margin:5px 0 0; color:var(--text-muted);">Rappel si ta session est encore ouverte à ton heure de fin.</p>
+            </div>
+            <div class="auto-card">
+                <strong>Digest vendredi</strong> <span class="auto-time" style="float:right;">Vendredi 19h</span>
+                <p style="margin:5px 0 0; color:var(--text-muted);">Résumé de ta semaine : heures, overtime, dailies, streak. Bon week-end !</p>
+            </div>
+
+            <hr class="section-divider">
+
+            <!-- ─── NIGHT OWL ─── -->
+            <h3>🦉 Night Owl</h3>
+            <div class="auto-card">
+                <span class="auto-time">Minuit</span> &nbsp;—&nbsp; <strong>"Tu bosses encore ?"</strong>
+                <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+                    <span style="background:#ed4245; color:#fff; padding:5px 14px; border-radius:4px; font-size:0.9em;">😤 Ozef, je continue</span>
+                    <span style="background:#2ecc71; color:#fff; padding:5px 14px; border-radius:4px; font-size:0.9em;">😴 Ok, c'est fini</span>
+                </div>
+            </div>
+            <div class="auto-card">
+                <span class="auto-time">3h du mat</span> &nbsp;—&nbsp; <strong>Fermeture forcée 🛏️</strong>
+                <p style="margin:5px 0 0; color:var(--text-muted);">Le bot te force à aller dormir.</p>
+            </div>
+
+            <hr class="section-divider">
+
+            <!-- ─── TIMEZONE ─── -->
+            <h3>🕐 Timezone</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; border:1px solid #444;">
+                <p style="margin:0 0 8px;">Le changement d'heure été/hiver est <strong>automatique</strong>.</p>
+                <p style="margin:0; color:var(--text-muted); font-size:0.9em;">Tu tapes <code>CET</code> et le bot gère CET ↔ CEST tout seul. Pareil pour EST ↔ EDT, PST ↔ PDT, etc.</p>
+            </div>
+
+        </div>
+
+    </main>
+
+    <script>
+        function showPage(pageId) {
+            document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(pageId).classList.add('active');
+            const index = ['autoshad', 'nomenclature', 'palette', 'timebot'].indexOf(pageId);
+            document.querySelectorAll('.nav-btn')[index].classList.add('active');
+        }
+    </script>
+</body>
+</html>

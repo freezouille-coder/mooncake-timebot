@@ -1,121 +1,178 @@
 # 🕐 Discord Time Tracker — Mooncake Edition
 
-Bot Discord complet pour tracker les heures de travail, gérer les congés, les dailies visuels, et générer des rapports pour la paie. Pensé pour les studios créatifs.
+Bot Discord complet pour tracker les heures de travail, gérer les congés, les dailies visuels, et générer des rapports pour la paie. Pensé pour les studios d'animation.
 
 ---
 
-## Commandes
+## ⚡ Démarrage rapide
 
-### 🎨 Artistes
+1. Crée le bot sur [discord.com/developers](https://discord.com/developers/applications) (Intents : ✅ Server Members, ✅ Message Content)
+2. Sur ton serveur Discord, crée :
+   - `#time-tracking` — résumés publics (⚠️ les messages non-admin sont auto-supprimés)
+   - `#time-tracking-admin` — privé admin (congés, sessions suspectes, alertes)
+   - Un canal `-progress` par artiste (ex: `maria-progress` ou `🍕 | maria-progress`)
+   - Rôles : `Admin`, `DreamTeam`, + départements (`Animation Team`, `LookDev Team`...) + rôles studio (`Lead`, `Artist`...)
+3. Déploie sur [Railway](https://railway.app) avec la variable `DISCORD_BOT_TOKEN`
+
+---
+
+## 🎨 Commandes Artiste
 
 | Commande | Description |
 |----------|-------------|
 | `/start` | 🟢 Commencer ta journée |
 | `/stop` | 🔴 Terminer (⚠️ bloqué sans daily !) |
-| `/pause` · `/resume` | ⏸️ Pauses (déduites auto) |
+| `/pause` · `/resume` | ⏸️ Pauses manuelles |
 | `/off [raison] [date]` | 🏖️ Jour off |
-| `/myschedule [début] [fin] [tz]` | 🕐 Horaires + timezone (ex: `/myschedule 9 18 CET`) |
-| `/mydays [jours]` | 📆 Jours de travail (ex: `/mydays lundi,mardi,mercredi,jeudi`) |
-| `/conge [début] [fin] [raison]` | 🏖️ Demander un congé (admin notifié) |
-| `/edit [date] [début] [fin] [raison]` | ✏️ Correction d'heures (validation admin) |
+| `/conge [début] [fin] [raison]` | 🏖️ Demander un congé |
+| `/edit [date] [début] [fin] [raison]` | ✏️ Correction d'heures |
 | `/status` | 📊 Ton statut actuel |
 | `/myreport [mois] [année]` | 📈 Tes heures + montant estimé |
 | `/mydailies [mois] [année]` | 📖 Tes dailies du mois |
 
-**Daily** = poster dans ton canal `-progress` avec `#daily` dans le message. Images, vidéos, liens acceptés.
-
-### 👑 Admin
+**Config perso :**
 
 | Commande | Description |
 |----------|-------------|
+| `/myschedule [début] [fin] [tz]` | 🕐 Horaires + timezone |
+| `/mydays [jours]` | 📆 Jours de travail (ex: `lundi,mardi,mercredi,jeudi,vendredi`) |
+| `/mylunch [minutes]` | 🍽️ Pause déjeuner (défaut: 60min) |
+| `/mychannel [canal]` | 📌 Lier ton canal progress |
+
+> **📅 Dates** : tu peux écrire `25/02/2026`, `2026-02-25`, ou `25.02.2026` — le bot comprend tout !
+
+### Comment poster ton daily
+
+1. Va dans ton canal `-progress` (ex: `#maria-progress`)
+2. Écris un message avec **#daily** dedans (+ images, vidéos, liens)
+3. Le bot réagit ✅ — c'est enregistré !
+4. Sans daily, `/stop` est bloqué
+
+> ⚠️ **N'écris PAS dans `#time-tracking`** — ce canal est réservé au bot. Tes messages y seront supprimés automatiquement.
+
+### 🍽️ Pause déjeuner automatique
+
+- Par défaut : **1h** déduite automatiquement si ta session > 6h
+- Si tu fais `/pause` de 30min+ toi-même → pas de déduction auto
+- Configure avec `/mylunch 45` (45min) ou `/mylunch 0` (désactivé)
+
+### 🔥 Streak & Overtime
+
+- **Streak** = jours consécutifs de daily. Visible dans `/stop` : 📝 à 2+, ⭐ à 3+, 🔥 à 5+ jours
+- **Overtime** = tout au-delà de 8h/jour (après lunch). Affiché séparément dans `/stop`, résumés, rapports
+
+---
+
+## 👑 Commandes Admin
+
+| Commande | Description |
+|----------|-------------|
+| `/who` | 👀 Qui est en ligne maintenant |
 | `/today [dept]` | 📋 Résumé du jour |
-| `/dailies [dept] [date]` | 📋 Dailies + manquants + absents |
-| `/summary [mois] [année] [dept]` | 📊 Résumé mensuel par département |
+| `/dailies [dept] [date]` | 📋 Dailies + manquants |
+| `/summary [mois] [année] [dept]` | 📊 Résumé mensuel |
 | `/report [mois] [année] [dept]` | 📑 Export TXT + CSV pour la paie |
-| `/setrate @artiste [taux] [devise]` | 💰 Taux horaire |
+| `/setrate @artiste [taux] [devise]` | 💰 Taux horaire custom |
 | `/rates` | 💰 Tous les taux |
 | `/pending` | 📋 Corrections en attente |
 | `/approve [id]` · `/reject [id]` | ✅❌ Traiter une correction |
 | `/pendingconge` | 🏖️ Congés en attente |
-| `/approveconge [id]` · `/rejectconge [id]` | ✅❌ Traiter un congé (ou emoji ✅/❌) |
+| `/approveconge [id]` · `/rejectconge [id]` | ✅❌ Traiter un congé |
 | `/vacances [début] [fin] [raison]` | 🏖️ Vacances collectives |
-| `/cancelvacances [début] [fin]` | ❌ Annuler vacances collectives |
+| `/cancelvacances [début] [fin]` | ❌ Annuler vacances |
+
+### Approbation des congés
+
+Deux méthodes :
+1. **Emoji** : clique ✅ ou ❌ directement sur le message du bot dans `#time-tracking-admin`
+2. **Commande** : `/approveconge 5` ou `/rejectconge 5`
+
+Les **Lead**, **Supervisor** et **Head** peuvent aussi approuver les congés de leur département.
 
 ---
 
-## Fonctionnalités
+## 🎭 Rôles Studio
 
-### 📝 Dailies dans les canaux -progress
-- Chaque artiste a son canal (`#theo-progress`, `#alice-progress`...)
-- Poster avec `#daily` dans le message → bot réagit ✅
-- Images, vidéos, liens capturés
-- `/stop` **bloqué** tant que le daily n'est pas posté
-- Liens vers les posts originaux dans tous les résumés
+Crée ces rôles Discord et assigne-les. Le bot les détecte automatiquement :
 
-### 🏖️ Congés
-- L'artiste demande avec `/conge` → notification avec @Admin tagué
-- L'admin clique ✅ ou ❌ directement sur le message (ou commande)
-- Artiste notifié dans son canal progress
-- Le matin des congés, message dans le canal progress
+| Rôle | Emoji | Taux défaut | Approuve congés |
+|------|-------|-------------|----------------|
+| Head | 👑 | 50$/h | ✅ son dept |
+| Lead | ⭐ | 40$/h | ✅ son dept |
+| Supervisor | 🔷 | 38$/h | ✅ son dept |
+| Senior Artist | 💎 | 32$/h | ❌ |
+| Artist | 🎨 | 25$/h | ❌ |
+| Junior Artist | 🌱 | 20$/h | ❌ |
+| Testor | 🧪 | 22$/h | ❌ |
+| Intern | 📚 | 15$/h | ❌ |
 
-### 📅 Jours fériés France
-- 11 fériés (y compris Pâques, Ascension, Pentecôte calculés auto)
-- Notification la veille à 17h (vendredi si lundi férié)
-- Pas de rappels les jours fériés — un artiste peut bosser quand même
-
-### 🔔 Rappels intelligents (canaux -progress, pas en DM)
-- **+1h** — rappel /start avec boutons (🟢 LIVE · 🏖️ OFF · ⏰ En retard)
-- **+7h** — rappel daily
-- **20h** — résumé auto dans #time-tracking + rappel daily insistant
-- **Heure de fin** — "ta session est toujours ouverte !"
-- **+10h** — alerte admin si session trop longue
-- Respecte les jours/horaires de chaque artiste
-
-### 🦉 Night Owl
-- **Minuit** — "tu bosses encore ?" avec boutons
-- **3h du mat** — fermeture forcée + message marrant
-
-### 💬 Messages fun (mix FR/EN)
-Le bot met la bonne ambiance. Messages aléatoires modifiables dans les listes `MSG_*`.
-
-### 💰 Paie
-- Taux horaire par artiste · Export CSV (Excel/Sheets, séparateur `;`)
+- Le taux du rôle s'applique si aucun `/setrate` custom n'est défini
+- Le rôle apparaît dans `/who`, `/today`, résumés, et rapports CSV (colonne `Rôle`)
 
 ---
 
-## Installation
+## 🔔 Automatisations
 
-### 1. Bot Discord
-1. [discord.com/developers](https://discord.com/developers/applications) → New Application
-2. Bot → Token · Intents : ✅ Server Members, ✅ Message Content
-3. OAuth2 : `bot` + `applications.commands` · Permissions : Send Messages, Embeds, Attach Files, Read History, Add Reactions
+| Quand | Quoi | Où |
+|-------|------|-----|
+| +1h après start_hour | Rappel `/start` avec boutons | canal progress |
+| +7h après start | Rappel daily | canal progress |
+| Heure de fin | "T'as oublié `/stop` ?" | canal progress |
+| Session > 10h | Alerte (une seule fois) | progress + admin |
+| 20h | Résumé du jour | `#time-tracking` |
+| 20h | Alertes admin | `#time-tracking-admin` |
+| 23h55 | Récap fin de journée | `#time-tracking` |
+| Minuit | Night owl check | canal progress |
+| 3h | Fermeture forcée | canal progress |
+| Vendredi 19h | Digest hebdo perso | canal progress |
+| Vendredi 19h | Dashboard admin | `#time-tracking-admin` |
+| 17h veille de férié | Notification férié | `#time-tracking` |
 
-### 2. Serveur Discord
-- `#time-tracking` — résumés publics, dailies
-- `#time-tracking-admin` — infos privées (sessions suspectes, demandes de congé, dailies manquants)
-- Canaux `-progress` par artiste (format flexible : `🍕 | maria-progress` OK)
-- Rôles : `Admin`, `DreamTeam`, départements optionnels (`Animation Team`...)
+### Timezone été/hiver
 
-### 3. Railway
-Push GitHub → [railway.app](https://railway.app) → Variable : `DISCORD_BOT_TOKEN`
+Automatique ! CET ↔ CEST, EST ↔ EDT, etc. L'artiste tape juste `CET` dans `/myschedule`.
 
-### 4. Local
-```bash
-pip install -r requirements.txt
-export DISCORD_BOT_TOKEN="ton-token"
-python bot.py
-```
+---
 
-## Config (bot.py)
+## 📂 Canaux
+
+| Canal | Qui écrit | Contenu |
+|-------|-----------|---------|
+| `#time-tracking` | 🤖 Bot + Admin | Résumés, notifications |
+| `#time-tracking-admin` | 🤖 Bot + Admin | Congés, alertes |
+| `#xxx-progress` | Artiste + Bot | Dailies, rappels |
+
+> Le bot supprime les messages non-admin dans `#time-tracking` avec une explication.
+
+---
+
+## ⚙️ Configuration
+
 ```python
 ADMIN_ROLE_NAME = "Admin"
 TEAM_ROLE_NAME = "DreamTeam"
-DEPT_ROLE_SUFFIX = "Team"
+DEPT_ROLE_SUFFIX = "Team"              # "Animation Team" → dept "Animation"
 SUMMARY_CHANNEL_NAME = "time-tracking"
+ADMIN_CHANNEL_NAME = "time-tracking-admin"
 PROGRESS_CHANNEL_SUFFIX = "-progress"
 DAILY_KEYWORD = "#daily"
-DEFAULT_TIMEZONE = "CET"
+DEFAULT_TIMEZONE = "CET"               # DST auto
+DEFAULT_LUNCH_MINUTES = 60             # Pause déj
+EXPECTED_WORK_HOURS = 8                # Seuil overtime
+MIN_WEEKLY_HOURS = 32                  # Alerte si moins
 ```
 
-## Tables DB
-`work_sessions` · `pauses` · `days_off` · `dailies` · `hourly_rates` · `edit_requests` · `leave_requests` · `user_schedules` · `collective_holidays` · `snoozes`
+## 🗃️ Base de données
+
+SQLite : `work_sessions` · `pauses` · `days_off` · `dailies` · `hourly_rates` · `edit_requests` · `leave_requests` · `user_schedules` · `user_channels` · `collective_holidays` · `snoozes`
+
+## 🚀 Déploiement
+
+```bash
+# Local
+pip install -r requirements.txt
+export DISCORD_BOT_TOKEN="ton-token"
+python bot.py
+
+# Railway : push GitHub → railway.app → variable DISCORD_BOT_TOKEN
+```

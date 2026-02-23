@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Abyss Tools — Admin</title>
+    <style>
+        :root { --bg-dark:#1e1e1e; --bg-panel:#2b2b2b; --text-main:#e0e0e0; --text-muted:#aaa; --accent:#5dade2; --highlight:#f39c12; --success:#27ae60; --purple:#8e44ad; --code-bg:#151515; --discord:#5865F2; --danger:#e74c3c; }
+        body { font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif; background:var(--bg-dark); color:var(--text-main); margin:0; padding:0; display:flex; height:100vh; overflow:hidden; }
+        nav { width:250px; background:#111; display:flex; flex-direction:column; border-right:1px solid #333; padding-top:20px; }
+        nav h1 { text-align:center; font-size:1.2em; color:var(--danger); margin-bottom:10px; text-transform:uppercase; letter-spacing:2px; }
+        nav p { text-align:center; font-size:0.8em; color:var(--text-muted); margin-bottom:30px; }
+        .nav-btn { background:none; border:none; color:var(--text-muted); padding:12px 20px; text-align:left; cursor:pointer; font-size:0.95em; transition:all 0.2s; width:100%; }
+        .nav-btn:hover { background:#222; color:var(--text-main); }
+        .nav-btn.active { background:#e74c3c22; color:var(--danger); border-left:3px solid var(--danger); }
+        .back-link { display:block; text-align:center; padding:12px 20px; margin-top:auto; color:var(--accent); text-decoration:none; font-size:0.9em; border-top:1px solid #333; }
+        .back-link:hover { background:#222; }
+        main { flex:1; overflow-y:auto; padding:40px 60px; max-width:900px; margin:0 auto; }
+        .page { display:none; } .page.active { display:block; }
+        h2 { color:var(--danger); border-bottom:2px solid var(--danger); padding-bottom:10px; }
+        h3 { color:var(--highlight); margin-top:30px; }
+        hr.section-divider { border:none; border-top:1px solid #333; margin:30px 0; }
+        .cmd-table { width:100%; border-collapse:collapse; margin:15px 0; }
+        .cmd-table th { background:#151515; padding:12px; text-align:left; color:var(--accent); border-bottom:2px solid var(--accent); }
+        .cmd-table td { padding:10px 12px; border-bottom:1px solid #333; }
+        .cmd-table code { background:var(--code-bg); color:var(--highlight); padding:3px 8px; border-radius:3px; }
+        .auto-card { background:var(--bg-panel); border-radius:8px; padding:15px 20px; margin:10px 0; border-left:4px solid var(--accent); }
+        .auto-card strong { color:var(--highlight); }
+        .auto-card .auto-time { color:var(--accent); font-family:monospace; font-size:1.1em; }
+        .cfg-block { background:var(--code-bg); border-radius:8px; padding:20px; margin:15px 0; font-family:'Fira Code','Consolas',monospace; font-size:0.9em; line-height:2; border:1px solid #333; }
+        .cfg-key { color:var(--accent); } .cfg-val { color:var(--success); } .cfg-comment { color:#666; }
+    </style>
+</head>
+<body>
+    <nav>
+        <h1>👑 Admin</h1>
+        <p>Abyss Tools</p>
+        <button class="nav-btn active" onclick="showPage('commands')">Commandes</button>
+        <button class="nav-btn" onclick="showPage('conges')">Congés & Vacances</button>
+        <button class="nav-btn" onclick="showPage('automations')">Automatisations</button>
+        <button class="nav-btn" onclick="showPage('config')">Configuration</button>
+        <button class="nav-btn" onclick="showPage('install')">Installation</button>
+        <a href="Doc_AbyssTools.html" class="back-link">← Documentation Artiste</a>
+    </nav>
+    <main>
+
+        <!-- ═══════════ COMMANDES ═══════════ -->
+        <div id="commands" class="page active">
+            <h2>👑 Commandes Admin</h2>
+
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0; border-left:4px solid var(--accent);">
+                <strong style="color:var(--accent);">2 canaux Discord</strong><br>
+                <span style="color:var(--text-muted); font-size:0.9em;">
+                    <code>#time-tracking</code> — résumés publics (messages non-admin auto-supprimés)<br>
+                    <code>#time-tracking-admin</code> — congés, corrections, sessions suspectes, alertes (privé admin)
+                </span>
+            </div>
+
+            <h3>👀 Suivi en temps réel</h3>
+            <table class="cmd-table"><thead><tr><th>Commande</th><th>Description</th></tr></thead><tbody>
+                <tr><td><code>/who</code></td><td>👀 Qui est en ligne maintenant (rôle + département + heures)</td></tr>
+                <tr><td><code>/today [dept]</code></td><td>📋 Résumé du jour : travail, overtime, off, dailies</td></tr>
+                <tr><td><code>/dailies [dept] [date]</code></td><td>📋 Dailies + manquants + liens vers posts</td></tr>
+            </tbody></table>
+
+            <h3>📊 Rapports Mensuels</h3>
+            <table class="cmd-table"><thead><tr><th>Commande</th><th>Description</th></tr></thead><tbody>
+                <tr><td><code>/summary [mois] [année] [dept]</code></td><td>📊 Résumé par département : heures, overtime, rôles, montants</td></tr>
+                <tr><td><code>/report [mois] [année] [dept]</code></td><td>📑 Export TXT + CSV (colonnes : Rôle, Heures sup, Taux, Montant...)</td></tr>
+            </tbody></table>
+
+            <h3>💰 Taux Horaires</h3>
+            <div style="background:#1a2e1a; padding:12px; border-radius:8px; margin:10px 0; border:1px solid #27ae6044; font-size:0.9em;">
+                💡 <strong>Taux par défaut selon le rôle</strong> : Head=50$/h, Lead=40$/h, Artist=25$/h... Le <code>/setrate</code> override toujours le taux du rôle.
+            </div>
+            <table class="cmd-table"><thead><tr><th>Commande</th><th>Description</th></tr></thead><tbody>
+                <tr><td><code>/setrate @artiste [taux] [devise]</code></td><td>💰 Taux custom (override le défaut du rôle)</td></tr>
+                <tr><td><code>/rates</code></td><td>💰 Tous les taux de l'équipe</td></tr>
+            </tbody></table>
+
+            <h3>✏️ Corrections</h3>
+            <table class="cmd-table"><thead><tr><th>Commande</th><th>Description</th></tr></thead><tbody>
+                <tr><td><code>/pending</code></td><td>📋 Corrections en attente</td></tr>
+                <tr><td><code>/approve [id]</code></td><td>✅ Approuver (notif dans le canal progress)</td></tr>
+                <tr><td><code>/reject [id] [raison]</code></td><td>❌ Rejeter</td></tr>
+            </tbody></table>
+
+            <h3>🏖️ Congés</h3>
+            <table class="cmd-table"><thead><tr><th>Commande</th><th>Description</th></tr></thead><tbody>
+                <tr><td><code>/pendingconge</code></td><td>🏖️ Demandes en attente</td></tr>
+                <tr><td><code>/approveconge [id]</code></td><td>✅ Approuver (ou emoji ✅ sur le message)</td></tr>
+                <tr><td><code>/rejectconge [id] [raison]</code></td><td>❌ Refuser (ou emoji ❌ sur le message)</td></tr>
+                <tr><td><code>/vacances [début] [fin] [raison]</code></td><td>🏖️ Vacances collectives — tout @DreamTeam off</td></tr>
+                <tr><td><code>/cancelvacances [début] [fin]</code></td><td>❌ Annuler vacances collectives</td></tr>
+            </tbody></table>
+
+            <h3>📊 Export CSV</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0;">
+                <p><strong>TXT</strong> — rapport lisible, groupé par département, avec rôles et overtime</p>
+                <p><strong>CSV</strong> — séparateur <code>;</code>, colonnes :</p>
+                <code style="color:var(--text-muted); font-size:0.85em;">Artiste · Rôle · Département · Date · Début · Fin · Pause · Heures · Heures sup · Taux · Montant · Devise · Daily · Message · Lien · Type</code>
+            </div>
+        </div>
+
+        <!-- ═══════════ CONGÉS ═══════════ -->
+        <div id="conges" class="page">
+            <h2>🏖️ Congés & Vacances</h2>
+
+            <h3>Demande individuelle</h3>
+            <div style="background:#222; padding:20px; border-radius:8px; margin:15px 0; border:1px solid #444;">
+                <div style="margin-bottom:8px;"><strong style="color:var(--accent);">1.</strong> Artiste : <code>/conge 14/04/2026 18/04/2026 "Vacances"</code></div>
+                <div style="margin-bottom:8px;"><strong style="color:var(--accent);">2.</strong> Bot poste dans <code>#time-tracking-admin</code> avec <strong style="color:var(--danger);">@Admin</strong> + emojis ✅ ❌</div>
+                <div style="margin-bottom:8px;"><strong style="color:var(--accent);">3.</strong> Admin, Lead, Supervisor ou Head du même dept clique ✅ ou ❌</div>
+                <div style="margin-bottom:8px;"><strong style="color:var(--accent);">4.</strong> Artiste notifié dans son canal <code>-progress</code></div>
+                <div><strong style="color:var(--accent);">5.</strong> Le matin des congés → message dans le canal progress</div>
+            </div>
+            <div style="background:#1a2e1a; padding:10px; border-radius:6px; border:1px solid #27ae6044; font-size:0.9em; margin-bottom:15px;">
+                💡 <strong>Permissions graduelles</strong> : un Lead Animation peut approuver les congés d'un Artist Animation, même sans le rôle @Admin.
+            </div>
+
+            <h3>Vacances collectives</h3>
+            <div style="background:#1a1a2e; padding:15px; border-radius:6px; border:1px solid #334;">
+                <code>/vacances 15/03/2026 28/03/2026 "Vacances de printemps"</code><br>
+                <span style="color:#666;">→ Tout @DreamTeam off. Un artiste peut <code>/start</code> quand même.</span><br><br>
+                <code>/cancelvacances 15/03/2026 28/03/2026</code>
+            </div>
+
+            <h3>📅 Jours Fériés France</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0; border-left:4px solid var(--purple);">
+                <strong style="color:#b97bdb;">11 fériés français (Pâques, Ascension, Pentecôte calculés auto)</strong>
+                <p style="margin:8px 0 0; color:var(--text-muted); font-size:0.9em;">
+                    Pas de rappels · Notif la veille à 17h · Vendredi si lundi férié · Artistes peuvent bosser
+                </p>
+            </div>
+        </div>
+
+        <!-- ═══════════ AUTOMATIONS ═══════════ -->
+        <div id="automations" class="page">
+            <h2>🔔 Automatisations</h2>
+
+            <h3>📅 Matin</h3>
+            <div class="auto-card"><strong>Notif congé</strong> <span class="auto-time" style="float:right;">matin</span><p style="margin:5px 0 0; color:var(--text-muted);">Message dans <code>-progress</code> des artistes en congé.</p></div>
+            <div class="auto-card"><strong>Rappel /start</strong> <span class="auto-time" style="float:right;">+1h</span><p style="margin:5px 0 0; color:var(--text-muted);">Boutons 🟢 LIVE · 🏖️ OFF · ⏰ En retard. Respecte jours/horaires de l'artiste.</p></div>
+
+            <h3>📝 Journée</h3>
+            <div class="auto-card"><strong>Rappel daily</strong> <span class="auto-time" style="float:right;">+7h</span><p style="margin:5px 0 0; color:var(--text-muted);">Si travaillé mais pas de <code>#daily</code>.</p></div>
+            <div class="auto-card"><strong>Session oubliée</strong> <span class="auto-time" style="float:right;">30min</span><p style="margin:5px 0 0; color:var(--text-muted);"><strong>À end_hour</strong> : rappel. <strong>&gt;10h</strong> : alerte admin dans <code>#time-tracking</code>.</p></div>
+
+            <h3>🌆 Soir</h3>
+            <div class="auto-card"><span class="auto-time">17h</span> — <strong>Notif fériés</strong><p style="margin:5px 0 0; color:var(--text-muted);">Prévient dans <code>#time-tracking</code> si demain est férié.</p></div>
+            <div class="auto-card"><span class="auto-time">20h</span> — <strong>Résumé auto (/today)</strong><p style="margin:5px 0 0; color:var(--text-muted);">Résumé complet + rappel daily insistant aux retardataires. <code>/stop</code> bloqué sans daily.</p></div>
+            <div class="auto-card"><span class="auto-time">23h55</span> — <strong>Résumé final</strong></div>
+
+            <h3>🦉 Night Owl</h3>
+            <div class="auto-card"><span class="auto-time">Minuit</span> — <strong>"Tu bosses encore ?"</strong> <span style="color:var(--text-muted);">Boutons: Ozef / Ok c'est fini</span></div>
+            <div class="auto-card"><span class="auto-time">3h</span> — <strong>Fermeture forcée 🛏️</strong> <span style="color:var(--text-muted);">Message marrant + auto-daily</span></div>
+            <div class="auto-card"><span class="auto-time">00h05</span> — <strong>Fermeture sessions oubliées veille</strong></div>
+        </div>
+
+        <!-- ═══════════ CONFIG ═══════════ -->
+        <div id="config" class="page">
+            <h2>⚙️ Configuration</h2>
+
+            <h3>Constantes (bot.py)</h3>
+            <div class="cfg-block">
+                <span class="cfg-key">ADMIN_ROLE_NAME</span> = <span class="cfg-val">"Admin"</span><br>
+                <span class="cfg-key">TEAM_ROLE_NAME</span> = <span class="cfg-val">"DreamTeam"</span> <span class="cfg-comment"># Rôle équipe</span><br>
+                <span class="cfg-key">DEPT_ROLE_SUFFIX</span> = <span class="cfg-val">"Team"</span> <span class="cfg-comment"># Ex: "Animation Team"</span><br>
+                <span class="cfg-key">SUMMARY_CHANNEL_NAME</span> = <span class="cfg-val">"time-tracking"</span><br>
+                <span class="cfg-key">ADMIN_CHANNEL_NAME</span> = <span class="cfg-val">"time-tracking-admin"</span> <span class="cfg-comment"># Privé admin</span><br>
+                <span class="cfg-key">PROGRESS_CHANNEL_SUFFIX</span> = <span class="cfg-val">"-progress"</span><br>
+                <span class="cfg-key">DAILY_KEYWORD</span> = <span class="cfg-val">"#daily"</span><br>
+                <span class="cfg-key">DEFAULT_TIMEZONE</span> = <span class="cfg-val">"CET"</span> <span class="cfg-comment"># Paris/Madrid</span><br>
+                <span class="cfg-key">DEFAULT_SCHEDULE_START</span> = <span class="cfg-val">10</span> / <span class="cfg-key">END</span> = <span class="cfg-val">18</span><br>
+                <span class="cfg-key">REMINDER_DAILY_OFFSET</span> = <span class="cfg-val">7</span> <span class="cfg-comment"># start + 7h</span>
+            </div>
+
+            <h3>Rôles Discord</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0;">
+                <p><span style="background:#e74c3c33; color:#e74c3c; padding:3px 10px; border-radius:12px;">Admin</span> Toi + managers (approuve tout)</p>
+                <p><span style="background:#5865F233; color:#5865F2; padding:3px 10px; border-radius:12px;">DreamTeam</span> Tous les membres de l'équipe</p>
+                <p><span style="background:#2ecc7133; color:#2ecc71; padding:3px 10px; border-radius:12px;">Animation Team</span> <span style="background:#f39c1233; color:#f39c12; padding:3px 10px; border-radius:12px;">LookDev Team</span> Départements (*Team)</p>
+            </div>
+
+            <h3>🎭 Rôles Studio (hiérarchie)</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0;">
+                <table class="cmd-table" style="margin:0;">
+                    <thead><tr><th>Rôle Discord</th><th></th><th>Taux défaut</th><th>Approuve congés</th></tr></thead>
+                    <tbody>
+                        <tr><td>Head</td><td>👑</td><td>50$/h</td><td>✅ son dept</td></tr>
+                        <tr><td>Lead</td><td>⭐</td><td>40$/h</td><td>✅ son dept</td></tr>
+                        <tr><td>Supervisor</td><td>🔷</td><td>38$/h</td><td>✅ son dept</td></tr>
+                        <tr><td>Senior Artist</td><td>💎</td><td>32$/h</td><td>❌</td></tr>
+                        <tr><td>Artist</td><td>🎨</td><td>25$/h</td><td>❌</td></tr>
+                        <tr><td>Junior Artist</td><td>🌱</td><td>20$/h</td><td>❌</td></tr>
+                        <tr><td>Testor</td><td>🧪</td><td>22$/h</td><td>❌</td></tr>
+                        <tr><td>Intern</td><td>📚</td><td>15$/h</td><td>❌</td></tr>
+                    </tbody>
+                </table>
+                <p style="margin:10px 0 0; color:var(--text-muted); font-size:0.9em;">Le <code>/setrate</code> custom override toujours le taux du rôle. Les rôles apparaissent dans tous les résumés et rapports.</p>
+            </div>
+
+            <h3>Canaux</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0;">
+                <p><code>#time-tracking</code> — résumés publics (messages non-admin auto-supprimés)</p>
+                <p><code>#time-tracking-admin</code> — congés, corrections, alertes (privé admin)</p>
+                <p><code>#nom-progress</code> — un par artiste (format flexible : <code>🍕 | maria-progress</code> OK)</p>
+            </div>
+        </div>
+
+        <!-- ═══════════ INSTALL ═══════════ -->
+        <div id="install" class="page">
+            <h2>🚀 Installation</h2>
+
+            <h3>1. Bot Discord</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0;">
+                <p><a href="https://discord.com/developers/applications" style="color:var(--accent);">discord.com/developers</a> → New Application → Bot → Token</p>
+                <p>Intents : ✅ Server Members, ✅ Message Content</p>
+                <p>OAuth2 : <code>bot</code> + <code>applications.commands</code></p>
+                <p style="color:var(--text-muted); font-size:0.9em;">Permissions : Send Messages, Embeds, Attach Files, Read History, Add Reactions</p>
+            </div>
+
+            <h3>2. Railway</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0;">
+                <p>Push sur GitHub → <a href="https://railway.app" style="color:var(--accent);">railway.app</a> → Deploy from GitHub</p>
+                <p>Variable : <code>DISCORD_BOT_TOKEN=ton-token</code></p>
+            </div>
+
+            <h3>3. Local</h3>
+            <div class="cfg-block">pip install -r requirements.txt<br>export DISCORD_BOT_TOKEN="ton-token"<br>python bot.py</div>
+
+            <h3>Tables DB</h3>
+            <div style="background:#222; padding:15px; border-radius:8px; margin:15px 0; font-size:0.9em; column-count:2;">
+                <p><code>work_sessions</code> sessions</p>
+                <p><code>pauses</code> pauses</p>
+                <p><code>days_off</code> jours off</p>
+                <p><code>dailies</code> publications</p>
+                <p><code>hourly_rates</code> taux</p>
+                <p><code>edit_requests</code> corrections</p>
+                <p><code>leave_requests</code> congés</p>
+                <p><code>user_schedules</code> horaires/jours</p>
+                <p><code>collective_holidays</code> vacances</p>
+                <p><code>snoozes</code> snooze rappels</p>
+            </div>
+        </div>
+
+    </main>
+    <script>
+        function showPage(id) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+            const i = ['commands','conges','automations','config','install'].indexOf(id);
+            if (i >= 0) document.querySelectorAll('.nav-btn')[i].classList.add('active');
+        }
+    </script>
+</body>
+</html>

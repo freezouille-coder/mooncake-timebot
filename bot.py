@@ -48,22 +48,61 @@ DEFAULT_TIMEZONE = "CET"
 REMINDER_DAILY_OFFSET = 7           # Rappel daily = start + 7h (ex: 9h→16h)
 DEFAULT_HOURLY_RATE = 0.0
 
-# ─── Timezone mapping ───────────────────────────────────────────────────────
-TZ_OFFSETS = {
-    "EST": -5, "EDT": -4, "CST": -6, "CDT": -5,
-    "MST": -7, "MDT": -6, "PST": -8, "PDT": -7,
-    "CET": 1, "CEST": 2, "GMT": 0, "UTC": 0,
-    "WET": 0, "EET": 2, "JST": 9, "KST": 9,
-    "IST": 5, "AEST": 10, "NZST": 12, "BRT": -3,
+# ─── Studio Roles (hiérarchie + taux par défaut) ─────────────────────────────
+# Rôles détectés via les rôles Discord. L'ordre = hiérarchie (0 = plus haut).
+# can_approve = peut approuver les congés de son département.
+
+STUDIO_ROLES = {
+    "Head":          {"level": 0, "emoji": "👑", "default_rate": 50.0, "can_approve": True},
+    "Lead":          {"level": 1, "emoji": "⭐", "default_rate": 40.0, "can_approve": True},
+    "Supervisor":    {"level": 2, "emoji": "🔷", "default_rate": 38.0, "can_approve": True},
+    "Senior Artist": {"level": 3, "emoji": "💎", "default_rate": 32.0, "can_approve": False},
+    "Artist":        {"level": 4, "emoji": "🎨", "default_rate": 25.0, "can_approve": False},
+    "Junior Artist": {"level": 5, "emoji": "🌱", "default_rate": 20.0, "can_approve": False},
+    "Testor":        {"level": 6, "emoji": "🧪", "default_rate": 22.0, "can_approve": False},
+    "Intern":        {"level": 7, "emoji": "📚", "default_rate": 15.0, "can_approve": False},
 }
 
+# ─── Timezone mapping (DST-aware) ──────────────────────────────────────────
+# L'artiste tape "CET" ou "EST", le bot utilise la vraie zone IANA en interne
+# pour gérer automatiquement le changement d'heure été/hiver.
+
+from zoneinfo import ZoneInfo
+
+TZ_MAP = {
+    # Europe
+    "CET": "Europe/Paris", "CEST": "Europe/Paris",
+    "WET": "Europe/London", "EET": "Europe/Athens",
+    "GMT": "Europe/London", "UTC": "UTC",
+    # Amérique du Nord
+    "EST": "America/New_York", "EDT": "America/New_York",
+    "CST": "America/Chicago", "CDT": "America/Chicago",
+    "MST": "America/Denver", "MDT": "America/Denver",
+    "PST": "America/Los_Angeles", "PDT": "America/Los_Angeles",
+    # Autres
+    "JST": "Asia/Tokyo", "KST": "Asia/Seoul",
+    "IST": "Asia/Kolkata", "AEST": "Australia/Sydney",
+    "NZST": "Pacific/Auckland", "BRT": "America/Sao_Paulo",
+    "HST": "Pacific/Honolulu", "AKST": "America/Anchorage",
+    "SGT": "Asia/Singapore", "HKT": "Asia/Hong_Kong",
+}
+
+def get_zoneinfo(tz_name):
+    """Retourne l'objet ZoneInfo pour un acronyme timezone."""
+    iana = TZ_MAP.get(tz_name.upper(), TZ_MAP.get(DEFAULT_TIMEZONE, "Europe/Paris"))
+    return ZoneInfo(iana)
+
 def tz_offset(tz_name):
-    """Retourne l'offset UTC pour un nom de timezone."""
-    return TZ_OFFSETS.get(tz_name.upper(), 1)
+    """Retourne l'offset UTC actuel (DST-aware) pour un timezone."""
+    from datetime import timezone as tz_mod
+    zi = get_zoneinfo(tz_name)
+    now_aware = datetime.now(zi)
+    return int(now_aware.utcoffset().total_seconds() / 3600)
 
 def now_tz(tz_name):
-    """Heure actuelle dans un timezone donné."""
-    return datetime.utcnow() + timedelta(hours=tz_offset(tz_name))
+    """Heure actuelle dans un timezone donné (DST-aware)."""
+    zi = get_zoneinfo(tz_name)
+    return datetime.now(zi).replace(tzinfo=None)  # Retourne naive pour compatibilité DB
 
 # ─── Jours fériés France ────────────────────────────────────────────────────
 
@@ -163,6 +202,7 @@ def init_db():
             end_hour INTEGER NOT NULL DEFAULT 18,
             tz TEXT NOT NULL DEFAULT 'CET',
             work_days TEXT NOT NULL DEFAULT '0,1,2,3,4',
+            lunch_minutes INTEGER NOT NULL DEFAULT 60,
             updated_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS snoozes (
@@ -196,6 +236,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_edits_status ON edit_requests(status);
         CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status);
     """)
+    # Migration: ajouter lunch_minutes si colonne manquante (backward compat)
+    try: conn.execute("ALTER TABLE user_schedules ADD COLUMN lunch_minutes INTEGER NOT NULL DEFAULT 60")
+    except: pass
     conn.commit(); conn.close()
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -374,9 +417,72 @@ def pick(messages, **kwargs):
     """Choisit un message aléatoire et le formate."""
     return random.choice(messages).format(**kwargs)
 
+def parse_date(text):
+    """Parse une date flexible: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, YYYY/MM/DD. Retourne str YYYY-MM-DD ou None."""
+    if not text: return None
+    text = text.strip()
+    for fmt_str in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(text, fmt_str).strftime("%Y-%m-%d")
+        except: continue
+    return None
+
+# ─── Streak & Overtime helpers ───────────────────────────────────────────────
+
+EXPECTED_WORK_HOURS = 8       # Heures normales par jour
+EXPECTED_PAUSE_MINS = 90      # Pause déjeuner par défaut (1h30)
+MIN_WEEKLY_HOURS = 32         # Alerte admin si artiste fait moins que ça sur la semaine
+
+def get_streak(conn, uid):
+    """Calcule le nombre de jours consécutifs avec un daily posté (en arrière depuis aujourd'hui)."""
+    date = datetime.strptime(today_str(), "%Y-%m-%d")
+    streak = 0
+    while True:
+        ds = date.strftime("%Y-%m-%d")
+        row = conn.execute("SELECT id FROM dailies WHERE user_id=? AND date=?", (uid, ds)).fetchone()
+        if not row:
+            # Vérifier si c'était un jour off ou weekend (ne casse pas le streak)
+            is_off = conn.execute("SELECT id FROM days_off WHERE user_id=? AND date=?", (uid, ds)).fetchone()
+            if is_off or date.weekday() >= 5:
+                date -= timedelta(days=1)
+                continue
+            break
+        streak += 1
+        date -= timedelta(days=1)
+    return streak
+
+def calc_overtime_mins(session, lunch_mins=60):
+    """Calcule les minutes d'heures sup pour une session (> EXPECTED_WORK_HOURS), après lunch auto."""
+    worked = calc_paid_mins(session, lunch_mins)
+    expected = EXPECTED_WORK_HOURS * 60
+    return max(0, worked - expected)
+
+def get_week_dates(ref_date=None):
+    """Retourne (lundi, dimanche) de la semaine contenant ref_date."""
+    if ref_date is None: ref_date = datetime.strptime(today_str(), "%Y-%m-%d")
+    monday = ref_date - timedelta(days=ref_date.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+def get_week_stats(conn, uid, monday, sunday):
+    """Stats de la semaine pour un artiste: heures, overtime, nb dailies."""
+    sessions = conn.execute(
+        "SELECT * FROM work_sessions WHERE user_id=? AND date>=? AND date<=? AND status='done'",
+        (uid, monday.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d"))
+    ).fetchall()
+    lunch = get_lunch_minutes(conn, uid)
+    total_mins = sum(calc_paid_mins(s, lunch) for s in sessions)
+    overtime_mins = sum(calc_overtime_mins(s, lunch) for s in sessions)
+    nb_dailies = conn.execute(
+        "SELECT COUNT(*) as c FROM dailies WHERE user_id=? AND date>=? AND date<=?",
+        (uid, monday.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d"))
+    ).fetchone()["c"]
+    nb_sessions = len(sessions)
+    return {"total_mins": total_mins, "overtime_mins": overtime_mins, "nb_dailies": nb_dailies, "nb_sessions": nb_sessions}
+
 def now_utc(): return datetime.utcnow()
 
-def now_local(): return datetime.utcnow() + timedelta(hours=tz_offset(DEFAULT_TIMEZONE))
+def now_local(): return now_tz(DEFAULT_TIMEZONE)
 
 # now() returns server time (CET by default) for DB storage
 def now(): return now_local()
@@ -393,9 +499,19 @@ def get_active_pause(conn, sid):
     return conn.execute("SELECT * FROM pauses WHERE session_id=? AND end_time IS NULL", (sid,)).fetchone()
 
 def calc_mins(s):
+    """Calcule les minutes brutes travaillées (pauses manuelles déduites, SANS lunch auto)."""
     st = datetime.fromisoformat(s["start_time"])
     en = datetime.fromisoformat(s["end_time"]) if s["end_time"] else now()
     return max(0, (en-st).total_seconds()/60 - (s["total_pause_minutes"] or 0))
+
+def calc_paid_mins(s, lunch_mins=60):
+    """Calcule les minutes payables : si session > 6h ET pauses manuelles < 30min, déduit le lunch auto."""
+    raw = calc_mins(s)
+    manual_pause = s["total_pause_minutes"] or 0
+    # Si la session brute (avant pauses) > 6h ET l'artiste n'a pas pris >= 30min de pause manuelle
+    if raw > 360 and manual_pause < 30:
+        return max(0, raw - lunch_mins)
+    return raw
 
 def is_admin(i):
     if i.user.guild_permissions.administrator: return True
@@ -410,6 +526,13 @@ def get_schedule(conn, uid):
     if r:
         return (r["start_hour"], r["end_hour"], r["tz"], r["work_days"])
     return (DEFAULT_SCHEDULE_START, DEFAULT_SCHEDULE_END, DEFAULT_TIMEZONE, "0,1,2,3,4")
+
+DEFAULT_LUNCH_MINUTES = 60
+
+def get_lunch_minutes(conn, uid):
+    """Retourne la durée de pause déjeuner configurée (défaut 60min)."""
+    r = conn.execute("SELECT lunch_minutes FROM user_schedules WHERE user_id=?", (uid,)).fetchone()
+    return r["lunch_minutes"] if r else DEFAULT_LUNCH_MINUTES
 
 def get_work_days(conn, uid):
     """Retourne la liste des jours de travail (0=lundi ... 6=dimanche)."""
@@ -473,6 +596,59 @@ def build_dept_map(guild):
         result[str(m.id)] = get_member_dept(m)
     return result
 
+# ─── Studio Role Helpers ─────────────────────────────────────────────────────
+
+def get_member_studio_role(member):
+    """Détecte le rôle studio d'un membre via ses rôles Discord. Retourne le plus haut."""
+    best = None
+    for r in member.roles:
+        if r.name in STUDIO_ROLES:
+            info = STUDIO_ROLES[r.name]
+            if best is None or info["level"] < best[1]:
+                best = (r.name, info["level"])
+    return best[0] if best else None
+
+def get_role_info(role_name):
+    """Retourne les infos d'un rôle studio (emoji, level, default_rate, can_approve)."""
+    return STUDIO_ROLES.get(role_name, {"level": 99, "emoji": "👤", "default_rate": 0.0, "can_approve": False})
+
+def get_role_tag(member):
+    """Retourne le tag formaté du rôle studio (emoji + nom), ou chaîne vide."""
+    role = get_member_studio_role(member)
+    if not role: return ""
+    info = get_role_info(role)
+    return f"{info['emoji']}{role}"
+
+def build_role_map(guild):
+    """Construit un dict {user_id: role_name} pour tous les membres de l'équipe."""
+    result = {}
+    for m in get_team_members(guild):
+        role = get_member_studio_role(m)
+        if role: result[str(m.id)] = role
+    return result
+
+def can_approve_for(member, target_member):
+    """Vérifie si member peut approuver les congés de target_member (même département, rôle supérieur)."""
+    approver_role = get_member_studio_role(member)
+    if not approver_role: return False
+    info = get_role_info(approver_role)
+    if not info["can_approve"]: return False
+    # Même département ?
+    return get_member_dept(member) == get_member_dept(target_member)
+
+def get_effective_rate(conn, uid, member=None):
+    """Retourne le taux horaire : custom > défaut du rôle > DEFAULT_HOURLY_RATE."""
+    r = conn.execute("SELECT rate, currency FROM hourly_rates WHERE user_id=?", (uid,)).fetchone()
+    if r and r["rate"] > 0: return (r["rate"], r["currency"])
+    # Taux par défaut du rôle studio
+    if member:
+        role = get_member_studio_role(member)
+        if role:
+            info = get_role_info(role)
+            if info["default_rate"] > 0:
+                return (info["default_rate"], "$")
+    return (DEFAULT_HOURLY_RATE, "$")
+
 async def dept_autocomplete(interaction: discord.Interaction, current: str):
     if not interaction.guild: return []
     depts = get_dept_list(interaction.guild)
@@ -535,7 +711,7 @@ def get_admin_channel(guild):
 # ─── Timezone Autocomplete ──────────────────────────────────────────────────
 
 async def tz_autocomplete(interaction: discord.Interaction, current: str):
-    common = ["EST", "EDT", "CST", "CDT", "MST", "PST", "PDT", "CET", "CEST", "GMT", "UTC", "JST", "BRT"]
+    common = ["CET", "EST", "PST", "CST", "MST", "GMT", "UTC", "JST", "BRT", "EET", "WET", "AEST", "NZST", "IST", "SGT", "HKT", "HST"]
     return [app_commands.Choice(name=f"{t} (UTC{tz_offset(t):+d})", value=t) for t in common if current.upper() in t][:25]
 
 # ─── Bot Setup ───────────────────────────────────────────────────────────────
@@ -669,11 +845,10 @@ async def on_raw_reaction_add(payload):
     channel = guild.get_channel(payload.channel_id)
     if not channel or channel.name not in (SUMMARY_CHANNEL_NAME, ADMIN_CHANNEL_NAME):
         return
-    # Vérifier que c'est un admin
+    # Vérifier que c'est un admin OU un Lead/Supervisor/Head du même département
     member = payload.member
     if not member: return
-    if not (member.guild_permissions.administrator or any(r.name == ADMIN_ROLE_NAME for r in member.roles)):
-        return
+    is_global_admin = member.guild_permissions.administrator or any(r.name == ADMIN_ROLE_NAME for r in member.roles)
     # Récupérer le message
     try:
         message = await channel.fetch_message(payload.message_id)
@@ -689,6 +864,12 @@ async def on_raw_reaction_add(payload):
     try:
         req = conn.execute("SELECT * FROM leave_requests WHERE id=? AND status='pending'", (rid,)).fetchone()
         if not req: return
+        # Vérifier les permissions
+        if not is_global_admin:
+            # Check si le membre est Lead/Supervisor/Head du même département
+            target = guild.get_member(int(req["user_id"]))
+            if not target or not can_approve_for(member, target):
+                return  # Pas autorisé
         if emoji == "✅":
             # Approuver
             d1 = datetime.strptime(req["start_date"], "%Y-%m-%d")
@@ -738,6 +919,23 @@ async def on_raw_reaction_add(payload):
 async def on_message(message):
     if message.author.bot:
         return
+
+    # ─── Protection canaux #time-tracking : réservés au bot + admins ───
+    if message.channel.name in (SUMMARY_CHANNEL_NAME, ADMIN_CHANNEL_NAME):
+        is_adm = message.author.guild_permissions.administrator or any(r.name == ADMIN_ROLE_NAME for r in message.author.roles)
+        if not is_adm:
+            try:
+                await message.delete()
+                await message.channel.send(
+                    f"🚫 {message.author.mention} — Ce canal est réservé au bot et aux admins.\n"
+                    f"📝 Pour poster ton daily → va dans ton canal **-progress** et écris avec **#daily**.\n"
+                    f"💬 Pour les commandes → utilise les commandes slash (`/start`, `/stop`, etc.).",
+                    delete_after=15  # Le message d'explication disparaît après 15s
+                )
+            except: pass
+            return
+
+    # ─── #daily detection dans les canaux -progress ───
     if (message.channel.name.endswith(PROGRESS_CHANNEL_SUFFIX)
             and DAILY_KEYWORD.lower() in message.content.lower()):
         conn = get_db()
@@ -792,8 +990,10 @@ async def cmd_start(interaction: discord.Interaction):
         conn.commit()
         dept = get_member_dept(interaction.user) if interaction.guild else ""
         dept_txt = f" · {dept}" if dept and dept != "Sans département" else ""
+        role_tag = get_role_tag(interaction.user) if interaction.guild else ""
+        role_txt = f" {role_tag}" if role_tag else ""
         fun = pick(MSG_START)
-        e = discord.Embed(title="🟢 Journée commencée !", description=f"**{name}**{dept_txt} — {cur.strftime('%H:%M')}\n\n{fun}", color=0x2ECC71, timestamp=cur)
+        e = discord.Embed(title="🟢 Journée commencée !", description=f"**{name}**{role_txt}{dept_txt} — {cur.strftime('%H:%M')}\n\n{fun}", color=0x2ECC71, timestamp=cur)
         # Si c'est un jour férié, petit message spécial
         holiday = is_holiday(today_str())
         if holiday:
@@ -820,13 +1020,27 @@ async def cmd_stop(interaction: discord.Interaction):
         conn.execute("UPDATE work_sessions SET end_time=?, status='done' WHERE id=?", (cur.isoformat(), active["id"]))
         conn.commit()
         up = conn.execute("SELECT * FROM work_sessions WHERE id=?", (active["id"],)).fetchone()
-        wm = calc_mins(up)
+        wm_raw = calc_mins(up)
+        lunch = get_lunch_minutes(conn, uid)
+        wm = calc_paid_mins(up, lunch)
+        lunch_deducted = wm_raw - wm  # > 0 si lunch auto-déduit
+        ot = max(0, wm - EXPECTED_WORK_HOURS * 60)
         fun = pick(MSG_STOP)
         e = discord.Embed(title="🔴 Journée terminée !", description=f"**{name}**\n\n{fun}", color=0xE74C3C, timestamp=cur)
         e.add_field(name="Début", value=datetime.fromisoformat(up["start_time"]).strftime("%H:%M"), inline=True)
         e.add_field(name="Fin", value=cur.strftime("%H:%M"), inline=True)
         e.add_field(name="Pauses", value=fmt(up["total_pause_minutes"]), inline=True)
-        e.add_field(name="🕐 Travaillé", value=f"**{fmt(wm)}**", inline=False)
+        worked_txt = f"**{fmt(wm)}**"
+        if lunch_deducted > 0:
+            worked_txt += f" (🍽️ -{fmt(lunch_deducted)} lunch auto)"
+        if ot > 0:
+            worked_txt += f" (⏰ +{fmt(ot)} sup)"
+        e.add_field(name="🕐 Payé", value=worked_txt, inline=False)
+        # Streak
+        streak = get_streak(conn, uid)
+        if streak >= 2:
+            streak_emoji = "🔥" if streak >= 5 else ("⭐" if streak >= 3 else "📝")
+            e.add_field(name=f"{streak_emoji} Streak", value=f"**{streak} jours** de daily consécutifs !", inline=False)
         await interaction.response.send_message(embed=e)
     finally: conn.close()
 
@@ -864,14 +1078,13 @@ async def cmd_resume(interaction: discord.Interaction):
     finally: conn.close()
 
 @bot.tree.command(name="off", description="🏖️ Jour off")
-@app_commands.describe(raison="Raison", date="Date YYYY-MM-DD")
+@app_commands.describe(raison="Raison", date="Date (ex: 25/02/2026 ou 2026-02-25)")
 async def cmd_off(interaction: discord.Interaction, raison: str="Jour off", date: Optional[str]=None):
     conn = get_db()
     try:
         uid, name = str(interaction.user.id), interaction.user.display_name
-        td = date or today_str()
-        try: datetime.strptime(td, "%Y-%m-%d")
-        except: return await interaction.response.send_message("⚠️ Format: YYYY-MM-DD", ephemeral=True)
+        td = parse_date(date) if date else today_str()
+        if not td: return await interaction.response.send_message("⚠️ Format date: `25/02/2026` ou `2026-02-25`", ephemeral=True)
         if conn.execute("SELECT * FROM days_off WHERE user_id=? AND date=?", (uid,td)).fetchone():
             return await interaction.response.send_message(f"⚠️ Déjà off le {td}.", ephemeral=True)
         if conn.execute("SELECT * FROM work_sessions WHERE user_id=? AND date=? AND status IN ('working','paused')", (uid,td)).fetchone():
@@ -888,8 +1101,8 @@ async def cmd_myschedule(interaction: discord.Interaction, debut: int, fin: int,
     if debut<0 or debut>23 or fin<0 or fin>23:
         return await interaction.response.send_message("⚠️ Heures entre 0 et 23.", ephemeral=True)
     tz_upper = timezone.upper()
-    if tz_upper not in TZ_OFFSETS:
-        tz_list = ", ".join(sorted(TZ_OFFSETS.keys()))
+    if tz_upper not in TZ_MAP:
+        tz_list = ", ".join(sorted(TZ_MAP.keys()))
         return await interaction.response.send_message(f"⚠️ Timezone inconnu. Disponibles: {tz_list}", ephemeral=True)
     conn = get_db()
     try:
@@ -958,16 +1171,39 @@ async def cmd_mychannel(interaction: discord.Interaction, canal: discord.TextCha
     e = discord.Embed(title="📌 Canal progress lié !", description=f"**{interaction.user.display_name}** → {target.mention}\n\nTous les rappels iront dans ce canal.", color=0x3498DB)
     await interaction.response.send_message(embed=e, ephemeral=True)
 
+@bot.tree.command(name="mylunch", description="🍽️ Configurer ta pause déjeuner")
+@app_commands.describe(minutes="Durée en minutes (défaut: 60). Met 0 pour désactiver la déduction auto.")
+async def cmd_mylunch(interaction: discord.Interaction, minutes: int = 60):
+    if minutes < 0 or minutes > 180:
+        return await interaction.response.send_message("⚠️ Entre 0 et 180 minutes.", ephemeral=True)
+    uid = str(interaction.user.id)
+    conn = get_db()
+    try:
+        existing = conn.execute("SELECT user_id FROM user_schedules WHERE user_id=?", (uid,)).fetchone()
+        if existing:
+            conn.execute("UPDATE user_schedules SET lunch_minutes=?, updated_at=? WHERE user_id=?",
+                         (minutes, now().isoformat(), uid))
+        else:
+            conn.execute("INSERT INTO user_schedules (user_id, lunch_minutes) VALUES (?,?)", (uid, minutes))
+        conn.commit()
+        if minutes == 0:
+            desc = "Déduction auto désactivée. Pense à faire `/pause` manuellement !"
+        else:
+            desc = f"**{minutes}min** de lunch auto-déduit si ta session > 6h et que tu n'as pas fait `/pause` >= 30min."
+        e = discord.Embed(title="🍽️ Pause déjeuner configurée !", description=desc, color=0xF39C12)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+    finally: conn.close()
+
 @bot.tree.command(name="conge", description="🏖️ Demander un congé")
-@app_commands.describe(debut="Date début YYYY-MM-DD", fin="Date fin YYYY-MM-DD (même jour si 1 jour)", raison="Raison")
+@app_commands.describe(debut="Date début (ex: 25/02/2026 ou 2026-02-25)", fin="Date fin (même jour si 1 jour)", raison="Raison")
 async def cmd_conge(interaction: discord.Interaction, debut: str, fin: str, raison: str="Congé"):
     conn = get_db()
     try:
         uid, name = str(interaction.user.id), interaction.user.display_name
-        try:
-            d1 = datetime.strptime(debut, "%Y-%m-%d"); d2 = datetime.strptime(fin, "%Y-%m-%d")
-        except:
-            return await interaction.response.send_message("⚠️ Format: YYYY-MM-DD", ephemeral=True)
+        debut = parse_date(debut); fin = parse_date(fin)
+        if not debut or not fin:
+            return await interaction.response.send_message("⚠️ Format date: `25/02/2026` ou `2026-02-25`", ephemeral=True)
+        d1 = datetime.strptime(debut, "%Y-%m-%d"); d2 = datetime.strptime(fin, "%Y-%m-%d")
         if d2 < d1:
             return await interaction.response.send_message("⚠️ La fin doit être après le début.", ephemeral=True)
         # Pas dans le passé (mais aujourd'hui OK)
@@ -1003,13 +1239,13 @@ async def cmd_conge(interaction: discord.Interaction, debut: str, fin: str, rais
     finally: conn.close()
 
 @bot.tree.command(name="edit", description="✏️ Correction d'heures")
-@app_commands.describe(date="Date YYYY-MM-DD", debut="Début HH:MM", fin="Fin HH:MM", raison="Raison")
+@app_commands.describe(date="Date (ex: 25/02/2026 ou 2026-02-25)", debut="Début HH:MM", fin="Fin HH:MM", raison="Raison")
 async def cmd_edit(interaction: discord.Interaction, date: str, debut: str, fin: str, raison: str):
     conn = get_db()
     try:
         uid, name = str(interaction.user.id), interaction.user.display_name
-        try: datetime.strptime(date, "%Y-%m-%d")
-        except: return await interaction.response.send_message("⚠️ Format date: YYYY-MM-DD", ephemeral=True)
+        date = parse_date(date)
+        if not date: return await interaction.response.send_message("⚠️ Format date: `25/02/2026` ou `2026-02-25`", ephemeral=True)
         try: datetime.strptime(debut, "%H:%M"); datetime.strptime(fin, "%H:%M")
         except: return await interaction.response.send_message("⚠️ Format heure: HH:MM", ephemeral=True)
         if conn.execute("SELECT * FROM edit_requests WHERE user_id=? AND target_date=? AND status='pending'", (uid,date)).fetchone():
@@ -1070,7 +1306,7 @@ async def cmd_myreport(interaction: discord.Interaction, mois: Optional[int]=Non
         for s in actives:
             wm=calc_mins(s); total_mins+=wm; d=datetime.strptime(s["date"],"%Y-%m-%d").strftime("%d/%m")
             lines.append(f"`{d}` {datetime.fromisoformat(s['start_time']).strftime('%H:%M')}→en cours **{fmt(wm)}** ⏳")
-        rate, cs = get_rate(conn, uid); th = total_mins/60
+        rate, cs = get_effective_rate(conn, uid, interaction.user if interaction.guild else None); th = total_mins/60
         e = discord.Embed(title=f"📈 {name} — {MOIS_FR[month]} {year}", color=0x3498DB)
         if lines:
             chunk = "\n".join(lines)
@@ -1112,6 +1348,30 @@ async def cmd_mydailies(interaction: discord.Interaction, mois: Optional[int]=No
 
 # ═══════════════════ ADMIN COMMANDS ══════════════════════════════════════════
 
+@bot.tree.command(name="who", description="👀 Qui est en ligne ?")
+async def cmd_who(interaction: discord.Interaction):
+    conn = get_db()
+    try:
+        date = today_str()
+        sessions = conn.execute("SELECT * FROM work_sessions WHERE date=? AND status IN ('working','paused') ORDER BY username", (date,)).fetchall()
+        if not sessions:
+            return await interaction.response.send_message("🏜️ Personne n'est en ligne en ce moment !", ephemeral=True)
+        dept_map = build_dept_map(interaction.guild) if interaction.guild else {}
+        role_map = build_role_map(interaction.guild) if interaction.guild else {}
+        lines = []
+        for s in sessions:
+            st = datetime.fromisoformat(s["start_time"]).strftime("%H:%M")
+            wm = calc_mins(s)
+            icon = "⏸️" if s["status"]=="paused" else "🟢"
+            dept = dept_map.get(s["user_id"], "")
+            dept_tag = f" `{dept}`" if dept else ""
+            role = role_map.get(s["user_id"], "")
+            role_tag = f" {get_role_info(role)['emoji']}" if role else ""
+            lines.append(f"{icon} **{s['username']}**{role_tag}{dept_tag} depuis {st} ({fmt(wm)})")
+        e = discord.Embed(title=f"👀 En ligne ({len(sessions)})", description="\n".join(lines), color=0x2ECC71)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+    finally: conn.close()
+
 @bot.tree.command(name="today", description="📋 Résumé du jour")
 @app_commands.describe(departement="Département")
 @app_commands.autocomplete(departement=dept_autocomplete)
@@ -1123,6 +1383,7 @@ async def cmd_today(interaction: discord.Interaction, departement: Optional[str]
         offs = conn.execute("SELECT * FROM days_off WHERE date=? ORDER BY username", (date,)).fetchall()
         dailies = conn.execute("SELECT * FROM dailies WHERE date=? ORDER BY username", (date,)).fetchall()
         dept_map = build_dept_map(interaction.guild) if interaction.guild else {}
+        role_map = build_role_map(interaction.guild) if interaction.guild else {}
         members = get_dept_members(interaction.guild, departement) if interaction.guild else []
         m_ids = {str(m.id) for m in members} if departement else None
         if m_ids is not None:
@@ -1136,11 +1397,14 @@ async def cmd_today(interaction: discord.Interaction, departement: Optional[str]
         if sessions:
             lines=[]
             for s in sessions:
-                wm=calc_mins(s); st=datetime.fromisoformat(s["start_time"]).strftime("%H:%M")
+                lunch_m=get_lunch_minutes(conn,s["user_id"])
+                wm=calc_paid_mins(s,lunch_m); st=datetime.fromisoformat(s["start_time"]).strftime("%H:%M")
                 en=datetime.fromisoformat(s["end_time"]).strftime("%H:%M") if s["end_time"] else "en cours"
                 icon="⏸️" if s["status"]=="paused" else ("✅" if s["status"]=="done" else "🟢")
                 dept=dept_map.get(s["user_id"],""); dept_tag=f" `{dept}`" if dept and not departement else ""
-                lines.append(f"{icon} **{s['username']}**{dept_tag} {st}→{en} **{fmt(wm)}**")
+                role=role_map.get(s["user_id"],""); role_e=f"{get_role_info(role)['emoji']}" if role else ""
+                ot=calc_overtime_mins(s,lunch_m); ot_tag=f" (+{fmt(ot)}sup)" if ot > 0 else ""
+                lines.append(f"{icon} {role_e}**{s['username']}**{dept_tag} {st}→{en} **{fmt(wm)}**{ot_tag}")
             e.add_field(name="💼 Travail", value="\n".join(lines), inline=False)
         if offs: e.add_field(name="🏖️ Off", value="\n".join(f"**{o['username']}**—{o['reason']}" for o in offs), inline=False)
         if not_started: e.add_field(name="⬜ Pas pointé", value=", ".join(f"**{a.display_name}**" for a in not_started), inline=False)
@@ -1158,15 +1422,14 @@ async def cmd_today(interaction: discord.Interaction, departement: Optional[str]
     finally: conn.close()
 
 @bot.tree.command(name="dailies", description="📋 Dailies + manquants")
-@app_commands.describe(departement="Département", date="Date YYYY-MM-DD")
+@app_commands.describe(departement="Département", date="Date (ex: 25/02/2026)")
 @app_commands.autocomplete(departement=dept_autocomplete)
 async def cmd_dailies(interaction: discord.Interaction, departement: Optional[str]=None, date: Optional[str]=None):
     if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
     conn = get_db()
     try:
-        td = date or today_str()
-        try: datetime.strptime(td, "%Y-%m-%d")
-        except: return await interaction.response.send_message("⚠️ Format: YYYY-MM-DD", ephemeral=True)
+        td = parse_date(date) if date else today_str()
+        if not td: return await interaction.response.send_message("⚠️ Format date: `25/02/2026` ou `2026-02-25`", ephemeral=True)
         dailies = conn.execute("SELECT * FROM dailies WHERE date=? ORDER BY username", (td,)).fetchall()
         workers = conn.execute("SELECT DISTINCT user_id, username FROM work_sessions WHERE date=?", (td,)).fetchall()
         offs = conn.execute("SELECT user_id, username FROM days_off WHERE date=?", (td,)).fetchall()
@@ -1321,17 +1584,21 @@ async def cmd_summary(interaction: discord.Interaction, mois: Optional[int]=None
                 for dn in sorted(by_dept.keys()):
                     du=by_dept[dn]; dl=[]; dth=0
                     for uid,u in sorted(du, key=lambda x:x[1]["name"].lower()):
-                        th=u["mins"]/60; dw=len(u["days"]); rate,cs=get_rate(conn,uid); pay=th*rate; gp+=pay; dth+=th
+                        m_obj=interaction.guild.get_member(int(uid)) if interaction.guild else None
+                        th=u["mins"]/60; dw=len(u["days"]); rate,cs=get_effective_rate(conn,uid,m_obj); pay=th*rate; gp+=pay; dth+=th
                         dpct=f" ({int(u['dl']/dw*100)}%)" if dw>0 else ""
                         pt=f" · {pay:.0f}{cs}" if rate>0 else ""
-                        dl.append(f"**{u['name']}** — {fmt(u['mins'])} ({th:.1f}h){pt} · 📝{u['dl']}/{dw}{dpct}")
+                        role_e=get_role_info(get_member_studio_role(m_obj))["emoji"] if m_obj and get_member_studio_role(m_obj) else ""
+                        dl.append(f"{role_e}**{u['name']}** — {fmt(u['mins'])} ({th:.1f}h){pt} · 📝{u['dl']}/{dw}{dpct}")
                     e.add_field(name=f"📂 {dn} ({len(du)}) — {dth:.1f}h", value="\n".join(dl), inline=False)
             else:
                 for uid,u in sorted(users.items(), key=lambda x:x[1]["name"].lower()):
-                    th=u["mins"]/60; dw=len(u["days"]); rate,cs=get_rate(conn,uid); pay=th*rate; gp+=pay
+                    m_obj=interaction.guild.get_member(int(uid)) if interaction.guild else None
+                    th=u["mins"]/60; dw=len(u["days"]); rate,cs=get_effective_rate(conn,uid,m_obj); pay=th*rate; gp+=pay
                     dpct=f" ({int(u['dl']/dw*100)}%)" if dw>0 else ""
                     pt=f"\n💰 **{pay:.2f}{cs}**" if rate>0 else ""
-                    e.add_field(name=f"👤 {u['name']}", value=f"🕐 **{fmt(u['mins'])}** ({th:.2f}h)\n📅 {dw}j | 🏖️ {u['off']} off\n📝 {u['dl']}/{dw}{dpct}{pt}", inline=True)
+                    role_e=get_role_info(get_member_studio_role(m_obj))["emoji"]+" " if m_obj and get_member_studio_role(m_obj) else ""
+                    e.add_field(name=f"{role_e}{u['name']}", value=f"🕐 **{fmt(u['mins'])}** ({th:.2f}h)\n📅 {dw}j | 🏖️ {u['off']} off\n📝 {u['dl']}/{dw}{dpct}{pt}", inline=True)
             if gp>0: e.set_footer(text=f"💰 Total: {gp:.2f}$")
         await interaction.response.send_message(embed=e)
     finally: conn.close()
@@ -1349,6 +1616,7 @@ async def cmd_report(interaction: discord.Interaction, mois: Optional[int]=None,
         offs = conn.execute("SELECT * FROM days_off WHERE date LIKE ? ORDER BY username,date", (f"{dp}%",)).fetchall()
         dailies = conn.execute("SELECT * FROM dailies WHERE date LIKE ? ORDER BY user_id,date", (f"{dp}%",)).fetchall()
         dept_map = build_dept_map(interaction.guild) if interaction.guild else {}
+        role_map = build_role_map(interaction.guild) if interaction.guild else {}
         if departement and interaction.guild:
             m_ids = {str(m.id) for m in get_dept_members(interaction.guild, departement)}
             sessions=[s for s in sessions if s["user_id"] in m_ids]
@@ -1376,8 +1644,11 @@ async def cmd_report(interaction: discord.Interaction, mois: Optional[int]=None,
         for dn in sorted(by_dept.keys()):
             rpt+=[f"  ══ {dn.upper()} ══",""]
             for uid,d in sorted(by_dept[dn], key=lambda x:x[1]["name"].lower()):
-                rate,cs=get_rate(conn,uid)
-                rpt+=[f"┌───────────────────────────────────",f"│ 👤 {d['name']}  [{dn}]  ({rate:.2f}{cs}/h)",f"├───────────────────────────────────"]
+                m_obj=interaction.guild.get_member(int(uid)) if interaction.guild else None
+                rate,cs=get_effective_rate(conn,uid,m_obj)
+                role=role_map.get(uid,"")
+                role_label=f"  [{role}]" if role else ""
+                rpt+=[f"┌───────────────────────────────────",f"│ 👤 {d['name']}{role_label}  [{dn}]  ({rate:.2f}{cs}/h)",f"├───────────────────────────────────"]
                 ut=0; wdates=set()
                 for s in d["sess"]:
                     wm=calc_mins(s); ut+=wm; wdates.add(s["date"])
@@ -1388,15 +1659,17 @@ async def cmd_report(interaction: discord.Interaction, mois: Optional[int]=None,
                     dm_msg=next((dl["message"] for dl in d["dl"] if dl["date"]==s["date"]),"")
                     dm_url=next((dl["message_url"] for dl in d["dl"] if dl["date"]==s["date"]),"")
                     rpt.append(f"│  {df}  {st}→{en}  {fmt(wm)}  pause:{fmt(s['total_pause_minutes'])}  {'✅' if hd else '❌'}📝")
-                    csv_rows.append({"Artiste":d["name"],"Département":dn,"Date":s["date"],"Début":st,"Fin":en,
+                    csv_rows.append({"Artiste":d["name"],"Rôle":role,"Département":dn,"Date":s["date"],"Début":st,"Fin":en,
                         "Pause (min)":round(s["total_pause_minutes"] or 0,1),"Heures":round(wm/60,2),
+                        "Heures sup":round(max(0,wm/60-EXPECTED_WORK_HOURS),2),
                         "Taux":rate,"Montant":round(wm/60*rate,2),"Devise":cs,
                         "Daily":"Oui" if hd else "Non","Daily message":dm_msg,"Daily lien":dm_url,"Type":"Travail"})
                 for o in d["offs"]:
                     df=datetime.strptime(o["date"],"%Y-%m-%d").strftime("%d/%m/%Y")
                     rpt.append(f"│  {df}  🏖️ OFF — {o['reason']}")
-                    csv_rows.append({"Artiste":d["name"],"Département":dn,"Date":o["date"],"Début":"","Fin":"",
-                        "Pause (min)":"","Heures":0,"Taux":rate,"Montant":0,"Devise":cs,
+                    csv_rows.append({"Artiste":d["name"],"Rôle":role,"Département":dn,"Date":o["date"],"Début":"","Fin":"",
+                        "Pause (min)":"","Heures":0,"Heures sup":0,
+                        "Taux":rate,"Montant":0,"Devise":cs,
                         "Daily":"","Daily message":"","Daily lien":"","Type":f"Off - {o['reason']}"})
                 if d["dl"]:
                     rpt+=["│","│  📝 DAILIES:"]
@@ -1425,12 +1698,12 @@ async def cmd_report(interaction: discord.Interaction, mois: Optional[int]=None,
     finally: conn.close()
 
 @bot.tree.command(name="vacances", description="🏖️ Vacances collectives — tout le monde off (admin)")
-@app_commands.describe(debut="Date début YYYY-MM-DD", fin="Date fin YYYY-MM-DD", raison="Raison")
+@app_commands.describe(debut="Date début (ex: 25/02/2026)", fin="Date fin", raison="Raison")
 async def cmd_vacances(interaction: discord.Interaction, debut: str, fin: str, raison: str="Vacances"):
     if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
-    try:
-        d1 = datetime.strptime(debut, "%Y-%m-%d"); d2 = datetime.strptime(fin, "%Y-%m-%d")
-    except: return await interaction.response.send_message("⚠️ Format: YYYY-MM-DD", ephemeral=True)
+    debut = parse_date(debut); fin = parse_date(fin)
+    if not debut or not fin: return await interaction.response.send_message("⚠️ Format date: `25/02/2026` ou `2026-02-25`", ephemeral=True)
+    d1 = datetime.strptime(debut, "%Y-%m-%d"); d2 = datetime.strptime(fin, "%Y-%m-%d")
     if d2 < d1: return await interaction.response.send_message("⚠️ La fin doit être après le début.", ephemeral=True)
     conn = get_db()
     try:
@@ -1468,12 +1741,12 @@ async def cmd_vacances(interaction: discord.Interaction, debut: str, fin: str, r
     finally: conn.close()
 
 @bot.tree.command(name="cancelvacances", description="❌ Annuler des vacances collectives (admin)")
-@app_commands.describe(debut="Date début YYYY-MM-DD", fin="Date fin YYYY-MM-DD")
+@app_commands.describe(debut="Date début (ex: 25/02/2026)", fin="Date fin")
 async def cmd_cancelvacances(interaction: discord.Interaction, debut: str, fin: str):
     if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
-    try:
-        d1 = datetime.strptime(debut, "%Y-%m-%d"); d2 = datetime.strptime(fin, "%Y-%m-%d")
-    except: return await interaction.response.send_message("⚠️ Format: YYYY-MM-DD", ephemeral=True)
+    debut = parse_date(debut); fin = parse_date(fin)
+    if not debut or not fin: return await interaction.response.send_message("⚠️ Format date: `25/02/2026` ou `2026-02-25`", ephemeral=True)
+    d1 = datetime.strptime(debut, "%Y-%m-%d"); d2 = datetime.strptime(fin, "%Y-%m-%d")
     conn = get_db()
     try:
         current = d1; dates = []
@@ -1508,11 +1781,16 @@ async def cmd_pendingconge(interaction: discord.Interaction):
 @bot.tree.command(name="approveconge", description="✅ Approuver un congé (admin)")
 @app_commands.describe(id="Numéro de la demande")
 async def cmd_approveconge(interaction: discord.Interaction, id: int):
-    if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
+    # Admin OU Lead/Supervisor/Head du même département
+    is_adm = is_admin(interaction)
     conn = get_db()
     try:
         req = conn.execute("SELECT * FROM leave_requests WHERE id=? AND status='pending'", (id,)).fetchone()
         if not req: return await interaction.response.send_message(f"⚠️ #{id} introuvable.", ephemeral=True)
+        if not is_adm:
+            target = interaction.guild.get_member(int(req["user_id"])) if interaction.guild else None
+            if not target or not can_approve_for(interaction.user, target):
+                return await interaction.response.send_message("⛔ Tu n'as pas la permission d'approuver ce congé.", ephemeral=True)
         # Créer les jours off
         d1 = datetime.strptime(req["start_date"], "%Y-%m-%d")
         d2 = datetime.strptime(req["end_date"], "%Y-%m-%d")
@@ -1546,11 +1824,15 @@ async def cmd_approveconge(interaction: discord.Interaction, id: int):
 @bot.tree.command(name="rejectconge", description="❌ Rejeter un congé (admin)")
 @app_commands.describe(id="Numéro", raison="Raison du refus")
 async def cmd_rejectconge(interaction: discord.Interaction, id: int, raison: str=""):
-    if not is_admin(interaction): return await interaction.response.send_message("⛔ Admin.", ephemeral=True)
+    is_adm = is_admin(interaction)
     conn = get_db()
     try:
         req = conn.execute("SELECT * FROM leave_requests WHERE id=? AND status='pending'", (id,)).fetchone()
         if not req: return await interaction.response.send_message(f"⚠️ #{id} introuvable.", ephemeral=True)
+        if not is_adm:
+            target = interaction.guild.get_member(int(req["user_id"])) if interaction.guild else None
+            if not target or not can_approve_for(interaction.user, target):
+                return await interaction.response.send_message("⛔ Tu n'as pas la permission de refuser ce congé.", ephemeral=True)
         conn.execute("UPDATE leave_requests SET status='rejected', reviewed_by=?, reviewed_at=? WHERE id=?",
                      (interaction.user.display_name, now().isoformat(), id))
         conn.commit()
@@ -1630,9 +1912,11 @@ async def notify_leave_today():
                 except: pass
     finally: conn.close()
 
+_alerted_10h = set()  # In-memory: {(user_id, date)} — pour ne pas spammer l'alerte >10h
+
 @tasks.loop(minutes=30)
 async def check_forgotten_sessions():
-    """Détecte les sessions oubliées: rappel à end_hour + alerte admin si >10h."""
+    """Détecte les sessions oubliées: rappel à end_hour + alerte admin si >10h (une seule fois)."""
     conn = get_db()
     try:
         date = today_str()
@@ -1656,8 +1940,9 @@ async def check_forgotten_sessions():
                             await ch.send(f"{a.mention}\n{pick(MSG_SESSION_FORGOTTEN_END, name=a.display_name, hour=sched_end)}")
                         except: pass
 
-                # 2) Alerte si session > 10h
-                if session_hours >= 10:
+                # 2) Alerte si session > 10h — UNE SEULE FOIS
+                if session_hours >= 10 and (uid, date) not in _alerted_10h:
+                    _alerted_10h.add((uid, date))
                     ch = find_progress_channel(g, a)
                     if ch:
                         try:
@@ -1797,6 +2082,7 @@ async def evening_summary_20h():
 
         for g in bot.guilds:
             dept_map = build_dept_map(g)
+            role_map = build_role_map(g)
             members = get_team_members(g)
             s_ids = {s["user_id"] for s in sessions}; o_ids = {o["user_id"] for o in offs}; d_ids = {d["user_id"] for d in dailies}
 
@@ -1804,14 +2090,19 @@ async def evening_summary_20h():
             if sessions:
                 lines = []
                 for s in sessions:
-                    wm = calc_mins(s)
+                    lunch_m = get_lunch_minutes(conn, s["user_id"])
+                    wm = calc_paid_mins(s, lunch_m)
                     st = datetime.fromisoformat(s["start_time"]).strftime("%H:%M")
                     en = datetime.fromisoformat(s["end_time"]).strftime("%H:%M") if s["end_time"] else "en cours"
                     icon = "⏸️" if s["status"]=="paused" else ("✅" if s["status"]=="done" else "🟢")
                     dept = dept_map.get(s["user_id"], "")
                     dept_tag = f" `{dept}`" if dept else ""
+                    role = role_map.get(s["user_id"], "")
+                    role_e = f"{get_role_info(role)['emoji']}" if role else ""
                     has_daily = "📝" if s["user_id"] in d_ids else "❌📝"
-                    lines.append(f"{icon} **{s['username']}**{dept_tag} {st}→{en} **{fmt(wm)}** {has_daily}")
+                    ot = calc_overtime_mins(s, lunch_m)
+                    ot_tag = f" (+{fmt(ot)}sup)" if ot > 0 else ""
+                    lines.append(f"{icon} {role_e}**{s['username']}**{dept_tag} {st}→{en} **{fmt(wm)}**{ot_tag} {has_daily}")
                 e.add_field(name="💼 Travail", value="\n".join(lines), inline=False)
             if offs:
                 e.add_field(name="🏖️ Off/Congé", value="\n".join(f"**{o['username']}** — {o['reason']}" for o in offs), inline=False)
@@ -1917,6 +2208,91 @@ async def force_close_3am():
                     except: pass
     finally: conn.close()
 
+# ─── Weekly Digest (Vendredi soir) ────────────────────────────────────────────
+
+@tasks.loop(time=utc_time(19, 0))
+async def weekly_digest():
+    """Vendredi 19h: résumé hebdo pour les artistes + dashboard admin."""
+    current = now()
+    if current.weekday() != 4:  # 4 = vendredi
+        return
+    conn = get_db()
+    try:
+        monday, sunday = get_week_dates()
+        mon_str, sun_str = monday.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d")
+
+        for g in bot.guilds:
+            members = get_team_members(g)
+            dept_map = build_dept_map(g)
+            admin_lines = []
+            low_hours_lines = []
+
+            # ─ Résumé par artiste dans leur canal progress ─
+            for a in members:
+                uid = str(a.id)
+                stats = get_week_stats(conn, uid, monday, sunday)
+                streak = get_streak(conn, uid)
+                if stats["nb_sessions"] == 0: continue
+
+                ch = find_progress_channel(g, a)
+                if ch:
+                    streak_txt = ""
+                    if streak >= 5: streak_txt = f"\n🔥 **Streak: {streak} jours** de daily consécutifs ! On fire !"
+                    elif streak >= 3: streak_txt = f"\n⭐ **Streak: {streak} jours** de daily d'affilée !"
+                    ot_txt = f"\n⏰ Dont **{fmt(stats['overtime_mins'])}** d'heures sup" if stats["overtime_mins"] > 0 else ""
+                    e = discord.Embed(title=f"📊 Ta semaine — {mon_str[5:]} → {sun_str[5:]}", color=0x9B59B6)
+                    e.add_field(name="🕐 Heures", value=f"**{fmt(stats['total_mins'])}**{ot_txt}", inline=True)
+                    e.add_field(name="📝 Dailies", value=f"**{stats['nb_dailies']}/{stats['nb_sessions']}**", inline=True)
+                    e.add_field(name="📅 Jours", value=f"**{stats['nb_sessions']}**", inline=True)
+                    if streak_txt:
+                        e.add_field(name="", value=streak_txt, inline=False)
+                    e.set_footer(text="Bon week-end ! 🎉")
+                    try: await ch.send(f"{a.mention}", embed=e)
+                    except: pass
+
+                # Collect admin data
+                dept = dept_map.get(uid, "")
+                dept_tag = f" `{dept}`" if dept else ""
+                ot = f" (+{fmt(stats['overtime_mins'])} sup)" if stats["overtime_mins"] > 0 else ""
+                admin_lines.append(f"**{a.display_name}**{dept_tag} — {fmt(stats['total_mins'])}{ot} · 📝{stats['nb_dailies']}/{stats['nb_sessions']}")
+
+                if stats["total_mins"] / 60 < MIN_WEEKLY_HOURS and stats["nb_sessions"] >= 3:
+                    low_hours_lines.append(f"⚠️ **{a.display_name}** — {fmt(stats['total_mins'])} (< {MIN_WEEKLY_HOURS}h)")
+
+            # ─ Dashboard admin dans #time-tracking-admin ─
+            if admin_lines:
+                admin_ch = get_admin_channel(g) or discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+                if admin_ch:
+                    e = discord.Embed(title=f"👑 Dashboard hebdo — {mon_str[5:]} → {sun_str[5:]}", color=0xE74C3C)
+                    # Grouper par département
+                    by_dept = {}
+                    for a in members:
+                        uid = str(a.id)
+                        stats = get_week_stats(conn, uid, monday, sunday)
+                        if stats["nb_sessions"] == 0: continue
+                        dept = dept_map.get(uid, "Sans département")
+                        by_dept.setdefault(dept, []).append((a.display_name, stats))
+                    for dept, artists in sorted(by_dept.items()):
+                        dept_total = sum(s["total_mins"] for _, s in artists)
+                        dept_ot = sum(s["overtime_mins"] for _, s in artists)
+                        lines = []
+                        for name, s in artists:
+                            ot = f" (+{fmt(s['overtime_mins'])})" if s["overtime_mins"] > 0 else ""
+                            lines.append(f"  {name} — {fmt(s['total_mins'])}{ot} · 📝{s['nb_dailies']}/{s['nb_sessions']}")
+                        ot_dept = f" (+{fmt(dept_ot)} sup)" if dept_ot > 0 else ""
+                        e.add_field(name=f"📂 {dept} ({len(artists)}) — {fmt(dept_total)}{ot_dept}", value="\n".join(lines), inline=False)
+                    if low_hours_lines:
+                        e.add_field(name=f"🚨 Heures basses (<{MIN_WEEKLY_HOURS}h)", value="\n".join(low_hours_lines), inline=False)
+                    await admin_ch.send(embed=e)
+
+            # ─ Résumé public dans #time-tracking ─
+            pub_ch = discord.utils.get(g.text_channels, name=SUMMARY_CHANNEL_NAME)
+            if pub_ch and admin_lines:
+                e = discord.Embed(title=f"📊 Résumé de la semaine — {mon_str[5:]} → {sun_str[5:]}", description="Bon week-end ! 🎉", color=0x9B59B6)
+                e.add_field(name="Équipe", value="\n".join(admin_lines[:20]), inline=False)
+                await pub_ch.send(embed=e)
+    finally: conn.close()
+
 # ═══════════════════ EVENTS ══════════════════════════════════════════════════
 
 @bot.event
@@ -1932,11 +2308,13 @@ async def on_ready():
         progress = [c.name for c in g.text_channels if c.name.endswith(PROGRESS_CHANNEL_SUFFIX)]
         print(f"   Canaux progress: {len(progress)} ({', '.join(progress[:5])}{'...' if len(progress)>5 else ''})")
     for t in [daily_summary, auto_close, reminder_start, notify_leave_today, check_forgotten_sessions,
-              reminder_daily, notify_holidays, evening_summary_20h, midnight_check, force_close_3am]:
+              reminder_daily, notify_holidays, evening_summary_20h, midnight_check, force_close_3am,
+              weekly_digest]:
         if not t.is_running(): t.start()
     print(f"   Daily: '{DAILY_KEYWORD}' dans *{PROGRESS_CHANNEL_SUFFIX} | /stop bloqué sans daily")
-    print(f"   Rappels: canaux progress (timezone par artiste)")
-    print(f"   Fériés France | Night owl: minuit+3h | Résumé 20h")
+    print(f"   Rappels: canaux progress (DST-aware timezone par artiste)")
+    print(f"   Fériés France | Night owl | Résumé 20h | Digest vendredi 19h")
+    print(f"   Studio roles: {', '.join(STUDIO_ROLES.keys())}")
     print("   🎉 Prêt !")
 
 if __name__ == "__main__":
