@@ -830,46 +830,66 @@ class MidnightView(View):
             await interaction.followup.send(embed=e)
         finally: conn.close()
 
-# ═══════════════════ TUTORIAL / SETUP ═══════════════════════════════════════
+# ═══════════════════ TUTORIAL / SETUP (canal temporaire) ════════════════════
 
-# ─── Helper : envoyer un DM avec fallback si bloqué ─────────────────────────
+SETUP_CHANNEL_PREFIX = "setup-"          # ex: #setup-maria
+SETUP_CHANNEL_TIMEOUT = 600              # 10min d'inactivité → suppression auto
 
-async def send_dm_or_fallback(interaction: discord.Interaction, embed: discord.Embed, view=None, fallback_text: str = None):
-    """Essaie d'envoyer un DM. Si bloqué, répond en éphémère avec instructions."""
+# ─── Helpers canal setup ─────────────────────────────────────────────────────
+
+async def create_setup_channel(guild: discord.Guild, member: discord.Member) -> discord.TextChannel:
+    """Crée un canal privé #setup-[nom] visible uniquement par l'artiste + admins."""
+    channel_name = f"{SETUP_CHANNEL_PREFIX}{member.display_name.lower().replace(' ', '-')}"
+
+    # Récupérer la catégorie du canal #time-tracking pour y mettre le setup
+    ref_ch = discord.utils.get(guild.text_channels, name=SUMMARY_CHANNEL_NAME)
+    category = ref_ch.category if ref_ch else None
+
+    # Overwrites : tout le monde ne voit pas, sauf l'artiste et les admins
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    # Donner accès aux admins Discord
+    admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
+    if admin_role:
+        overwrites[admin_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+    ch = await guild.create_text_channel(
+        name=channel_name,
+        overwrites=overwrites,
+        category=category,
+        topic=f"Setup guidé pour {member.display_name} — supprimé automatiquement à la fin.",
+        reason="Setup guidé time tracker"
+    )
+    return ch
+
+
+async def delete_setup_channel(channel: discord.TextChannel, delay: int = 5):
+    """Supprime le canal setup après un délai (en secondes)."""
+    await asyncio.sleep(delay)
     try:
-        if view:
-            await interaction.user.send(embed=embed, view=view)
-        else:
-            await interaction.user.send(embed=embed)
-        return True
-    except discord.Forbidden:
-        howto = (
-            "📵 **Je n'ai pas pu t'envoyer un message privé !**\n\n"
-            "Pour recevoir des DMs du bot, active l'option dans Discord :\n"
-            "1. Clique sur le **nom du serveur** → **Paramètres**\n"
-            "2. Va dans **Confidentialité**\n"
-            "3. Active ✅ **Autoriser les messages privés des membres du serveur**\n\n"
-            "Puis refais `/setup` 🙂"
-        )
-        e_err = discord.Embed(description=howto, color=0xE74C3C)
-        await interaction.response.send_message(embed=e_err, ephemeral=True)
-        return False
+        await channel.delete(reason="Setup terminé — canal temporaire supprimé")
     except Exception:
-        await interaction.response.send_message("⚠️ Impossible d'envoyer un DM. Réessaie plus tard.", ephemeral=True)
-        return False
+        pass
 
 
-# ─── Step Views ──────────────────────────────────────────────────────────────
+# ─── Setup Views (s'envoient dans le canal temporaire) ───────────────────────
 
 class SetupStep1View(View):
     """Étape 1 : Choisir ses horaires."""
-    def __init__(self, user_id: str):
-        super().__init__(timeout=600)
+    def __init__(self, user_id: str, channel: discord.TextChannel):
+        super().__init__(timeout=SETUP_CHANNEL_TIMEOUT)
         self.user_id = user_id
+        self.channel = channel
+
+    async def on_timeout(self):
+        await delete_setup_channel(self.channel, delay=0)
 
     async def _apply(self, interaction: discord.Interaction, start: int, end: int, tz: str):
         if str(interaction.user.id) != self.user_id:
-            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
         conn = get_db()
         try:
             conn.execute(
@@ -880,10 +900,9 @@ class SetupStep1View(View):
             conn.commit()
         finally:
             conn.close()
-        for item in self.children:
-            item.disabled = True
+        for item in self.children: item.disabled = True
         await interaction.response.edit_message(view=self)
-        await _send_setup_step2(interaction.user, start, end, tz)
+        await _send_setup_step2(self.channel, interaction.user, start, end, tz)
 
     @discord.ui.button(label="🌅 Matin (9h–17h)", style=discord.ButtonStyle.primary)
     async def btn_matin(self, interaction: discord.Interaction, button: Button):
@@ -900,35 +919,37 @@ class SetupStep1View(View):
     @discord.ui.button(label="⚙️ Je configure moi-même", style=discord.ButtonStyle.secondary)
     async def btn_custom(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.user_id:
-            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
-        for item in self.children:
-            item.disabled = True
+            return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
+        for item in self.children: item.disabled = True
         await interaction.response.edit_message(view=self)
         e = discord.Embed(
             title="⚙️ Configuration manuelle",
             description=(
-                "Utilise la commande `/myschedule` sur le serveur pour définir tes horaires précis.\n\n"
+                "Utilise `/myschedule` sur le serveur pour définir tes horaires précis.\n\n"
                 "Exemple : `/myschedule début:9 fin:18 tz:CET`\n\n"
-                "*(On continue le tutoriel avec les valeurs par défaut pour l'instant — tu pourras modifier plus tard !)*"
+                "*(On continue avec les valeurs par défaut 10h–18h CET pour l'instant.)*"
             ),
             color=0xF39C12
         )
-        await interaction.user.send(embed=e)
-        await _send_setup_step2(interaction.user, 10, 18, "CET")
+        await self.channel.send(embed=e)
+        await _send_setup_step2(self.channel, interaction.user, 10, 18, "CET")
 
 
 class SetupStep2View(View):
-    """Étape 2 : Choisir sa timezone."""
-    def __init__(self, user_id: str, start: int, end: int, tz: str):
-        super().__init__(timeout=600)
+    """Étape 2 : Timezone."""
+    def __init__(self, user_id: str, channel: discord.TextChannel, start: int, end: int):
+        super().__init__(timeout=SETUP_CHANNEL_TIMEOUT)
         self.user_id = user_id
+        self.channel = channel
         self.start = start
         self.end = end
-        self.tz = tz
+
+    async def on_timeout(self):
+        await delete_setup_channel(self.channel, delay=0)
 
     async def _apply(self, interaction: discord.Interaction, new_tz: str):
         if str(interaction.user.id) != self.user_id:
-            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
         conn = get_db()
         try:
             conn.execute(
@@ -939,10 +960,9 @@ class SetupStep2View(View):
             conn.commit()
         finally:
             conn.close()
-        for item in self.children:
-            item.disabled = True
+        for item in self.children: item.disabled = True
         await interaction.response.edit_message(view=self)
-        await _send_setup_step3(interaction.user, self.start, self.end, new_tz)
+        await _send_setup_step3(self.channel, interaction.user, self.start, self.end, new_tz)
 
     @discord.ui.button(label="🇪🇺 Europe (CET/CEST)", style=discord.ButtonStyle.primary)
     async def btn_cet(self, interaction: discord.Interaction, button: Button):
@@ -963,16 +983,20 @@ class SetupStep2View(View):
 
 class SetupStep3View(View):
     """Étape 3 : Pause déjeuner."""
-    def __init__(self, user_id: str, start: int, end: int, tz: str):
-        super().__init__(timeout=600)
+    def __init__(self, user_id: str, channel: discord.TextChannel, start: int, end: int, tz: str):
+        super().__init__(timeout=SETUP_CHANNEL_TIMEOUT)
         self.user_id = user_id
+        self.channel = channel
         self.start = start
         self.end = end
         self.tz = tz
 
+    async def on_timeout(self):
+        await delete_setup_channel(self.channel, delay=0)
+
     async def _apply(self, interaction: discord.Interaction, minutes: int):
         if str(interaction.user.id) != self.user_id:
-            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
         conn = get_db()
         try:
             conn.execute(
@@ -983,10 +1007,9 @@ class SetupStep3View(View):
             conn.commit()
         finally:
             conn.close()
-        for item in self.children:
-            item.disabled = True
+        for item in self.children: item.disabled = True
         await interaction.response.edit_message(view=self)
-        await _send_setup_step4(interaction.user, self.start, self.end, self.tz)
+        await _send_setup_step4(self.channel, interaction.user, self.start, self.end, self.tz)
 
     @discord.ui.button(label="🍽️ 1h (défaut)", style=discord.ButtonStyle.primary)
     async def btn_60(self, interaction: discord.Interaction, button: Button):
@@ -1006,91 +1029,101 @@ class SetupStep3View(View):
 
 
 class SetupStep4View(View):
-    """Étape 4 : Résumé + lancer la journée test."""
-    def __init__(self, user_id: str):
-        super().__init__(timeout=600)
+    """Étape 4 : Récap + confirmation."""
+    def __init__(self, user_id: str, channel: discord.TextChannel):
+        super().__init__(timeout=SETUP_CHANNEL_TIMEOUT)
         self.user_id = user_id
+        self.channel = channel
 
-    @discord.ui.button(label="🚀 J'ai compris, allons-y !", style=discord.ButtonStyle.green)
+    async def on_timeout(self):
+        await delete_setup_channel(self.channel, delay=0)
+
+    @discord.ui.button(label="🚀 C'est parti !", style=discord.ButtonStyle.green)
     async def btn_go(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.user_id:
-            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
-        for item in self.children:
-            item.disabled = True
+            return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
+        for item in self.children: item.disabled = True
         await interaction.response.edit_message(view=self)
-        await _send_setup_done(interaction.user)
+        e = discord.Embed(
+            title="🎉 Setup terminé !",
+            description=(
+                "Tu es configuré·e. Retourne sur le serveur et tape `/start` pour commencer ta journée !\n\n"
+                "Ce canal va disparaître dans quelques secondes. Bonne journée 🚀"
+            ),
+            color=0x2ECC71
+        )
+        await self.channel.send(embed=e)
+        await delete_setup_channel(self.channel, delay=5)
 
-    @discord.ui.button(label="🔁 Recommencer le setup", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="🔁 Recommencer", style=discord.ButtonStyle.secondary)
     async def btn_restart(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.user_id:
-            return await interaction.response.send_message("⚠️ Ce bouton n'est pas pour toi.", ephemeral=True)
-        for item in self.children:
-            item.disabled = True
+            return await interaction.response.send_message("⚠️ Ce canal est réservé à son propriétaire.", ephemeral=True)
+        for item in self.children: item.disabled = True
         await interaction.response.edit_message(view=self)
-        await _send_setup_step1(interaction.user)
+        await _send_setup_step1(self.channel, interaction.user)
 
 
-# ─── Step senders ─────────────────────────────────────────────────────────────
+# ─── Step senders (vers le canal temporaire) ─────────────────────────────────
 
-async def _send_setup_step1(user: discord.User):
+async def _send_setup_step1(channel: discord.TextChannel, member: discord.Member):
     e = discord.Embed(
         title="👋 Bienvenue sur le Time Tracker ! — Étape 1/4",
         description=(
-            "Ce petit setup va prendre **1 minute** et tu n'auras plus à y revenir.\n\n"
+            "Ce setup prend **1 minute** et tu n'auras plus à y revenir.\n\n"
             "**🕐 Quels sont tes horaires habituels ?**\n"
-            "*(Tu pourras toujours affiner avec `/myschedule` plus tard)*"
+            "*(Affine avec `/myschedule` à tout moment)*"
         ),
         color=0x3498DB
     )
     e.set_footer(text="Mooncake Time Tracker · Setup guidé")
-    await user.send(embed=e, view=SetupStep1View(str(user.id)))
+    await channel.send(member.mention, embed=e, view=SetupStep1View(str(member.id), channel))
 
 
-async def _send_setup_step2(user: discord.User, start: int, end: int, tz: str):
+async def _send_setup_step2(channel: discord.TextChannel, member: discord.Member, start: int, end: int, tz: str):
     e = discord.Embed(
         title="🌍 Étape 2/4 — Ta timezone",
         description=(
-            f"Horaires enregistrés : **{start}h → {end}h** ✅\n\n"
+            f"Horaires : **{start}h → {end}h** ✅\n\n"
             "**Dans quel fuseau horaire tu travailles ?**\n"
-            "*(Le changement heure été/hiver est géré automatiquement)*"
+            "*(Été/hiver géré automatiquement)*"
         ),
         color=0x3498DB
     )
     e.set_footer(text="Mooncake Time Tracker · Setup guidé")
-    await user.send(embed=e, view=SetupStep2View(str(user.id), start, end, tz))
+    await channel.send(embed=e, view=SetupStep2View(str(member.id), channel, start, end))
 
 
-async def _send_setup_step3(user: discord.User, start: int, end: int, tz: str):
+async def _send_setup_step3(channel: discord.TextChannel, member: discord.Member, start: int, end: int, tz: str):
     e = discord.Embed(
         title="🍽️ Étape 3/4 — Pause déjeuner",
         description=(
-            f"Timezone enregistrée : **{tz}** ✅\n\n"
+            f"Timezone : **{tz}** ✅\n\n"
             "**Combien de temps pour ta pause déj ?**\n\n"
             "Si ta session dépasse **6h** et que tu n'as pas fait `/pause` toi-même, "
-            "cette durée sera automatiquement déduite de ton temps de travail."
+            "cette durée sera automatiquement déduite."
         ),
         color=0x3498DB
     )
     e.set_footer(text="Mooncake Time Tracker · Setup guidé")
-    await user.send(embed=e, view=SetupStep3View(str(user.id), start, end, tz))
+    await channel.send(embed=e, view=SetupStep3View(str(member.id), channel, start, end, tz))
 
 
-async def _send_setup_step4(user: discord.User, start: int, end: int, tz: str):
+async def _send_setup_step4(channel: discord.TextChannel, member: discord.Member, start: int, end: int, tz: str):
     conn = get_db()
     try:
-        sched = conn.execute("SELECT * FROM user_schedules WHERE user_id=?", (str(user.id),)).fetchone()
+        sched = conn.execute("SELECT * FROM user_schedules WHERE user_id=?", (str(member.id),)).fetchone()
         lunch = sched["lunch_minutes"] if sched and sched["lunch_minutes"] is not None else 60
     finally:
         conn.close()
     lunch_txt = f"{lunch}min" if lunch > 0 else "Désactivée"
     e = discord.Embed(
-        title="✅ Étape 4/4 — C'est tout bon !",
+        title="✅ Étape 4/4 — Récap de ta config",
         description=(
-            f"**Récap de ta config :**\n"
             f"🕐 Horaires : **{start}h → {end}h**\n"
             f"🌍 Timezone : **{tz}**\n"
             f"🍽️ Pause déj auto : **{lunch_txt}**\n\n"
-            "**📚 Les commandes essentielles à connaître :**\n"
+            "**📚 Commandes essentielles :**\n"
             "▸ `/start` — Commencer ta journée\n"
             "▸ `/stop` — Terminer *(bloqué sans daily !)*\n"
             "▸ `/pause` / `/resume` — Gérer tes pauses\n"
@@ -1098,116 +1131,100 @@ async def _send_setup_step4(user: discord.User, start: int, end: int, tz: str):
             "▸ `/myreport` — Tes heures du mois\n\n"
             "**📝 Le daily :**\n"
             "Poste dans ton canal `-progress` avec **#daily** dans le message.\n"
-            "Sans ça, `/stop` sera bloqué !\n\n"
-            "**✏️ Commandes de config :**\n"
-            "▸ `/myschedule` — Modifier horaires/timezone\n"
-            "▸ `/mydays` — Jours de travail\n"
-            "▸ `/mylunch` — Changer la pause déj\n"
-            "▸ `/mychannel` — Lier ton canal progress\n\n"
-            "*Tu peux refaire `/setup` à tout moment pour changer ta config.*"
+            "Sans ça, `/stop` est bloqué.\n\n"
+            "**✏️ Pour modifier ta config plus tard :**\n"
+            "▸ `/myschedule` · `/mydays` · `/mylunch` · `/mychannel`"
         ),
         color=0x2ECC71
     )
-    e.set_footer(text="Mooncake Time Tracker · Setup terminé 🎉")
-    await user.send(embed=e, view=SetupStep4View(str(user.id)))
-
-
-async def _send_setup_done(user: discord.User):
-    e = discord.Embed(
-        title="🎉 Prêt·e à tracker !",
-        description=(
-            "Tu es configuré·e. Retourne sur le serveur et tape `/start` pour commencer ta journée !\n\n"
-            "Si tu as des questions, demande à un admin ou refais `/setup` pour revoir la config.\n\n"
-            "Bonne journée 🚀"
-        ),
-        color=0x2ECC71
-    )
-    await user.send(embed=e)
+    e.set_footer(text="Mooncake Time Tracker · Setup guidé 🎉")
+    await channel.send(embed=e, view=SetupStep4View(str(member.id), channel))
 
 
 # ─── Commande /setup ─────────────────────────────────────────────────────────
 
-@bot.tree.command(name="setup", description="🎓 Configuration guidée en DM (horaires, timezone, pause déj)")
+@bot.tree.command(name="setup", description="🎓 Configuration guidée (horaires, timezone, pause déj)")
 async def cmd_setup(interaction: discord.Interaction):
-    """Lance le tutoriel de setup en DM."""
-    # Accusé de réception immédiat (Discord exige une réponse en <3s)
+    """Crée un canal temporaire privé et lance le tutoriel de setup."""
+    guild = interaction.guild
+    if not guild:
+        return await interaction.response.send_message("⚠️ Cette commande doit être utilisée sur le serveur.", ephemeral=True)
+
+    # Vérifier si un canal setup existe déjà pour cet user
+    existing_name = f"{SETUP_CHANNEL_PREFIX}{interaction.user.display_name.lower().replace(' ', '-')}"
+    existing = discord.utils.get(guild.text_channels, name=existing_name)
+    if existing:
+        return await interaction.response.send_message(
+            f"📬 Ton canal de setup est déjà ouvert : {existing.mention}",
+            ephemeral=True
+        )
+
+    # Créer le canal
+    try:
+        ch = await create_setup_channel(guild, interaction.user)
+    except discord.Forbidden:
+        return await interaction.response.send_message(
+            "⚠️ Je n'ai pas la permission de créer des canaux (`Manage Channels`). Contacte un admin !",
+            ephemeral=True
+        )
+    except Exception as ex:
+        return await interaction.response.send_message(f"⚠️ Erreur lors de la création du canal : {ex}", ephemeral=True)
+
     await interaction.response.send_message(
-        "📬 Je t'envoie les instructions en DM ! Vérifie tes messages privés 😊",
+        f"📬 Ton canal de setup est prêt : {ch.mention} — il disparaîtra automatiquement à la fin !",
         ephemeral=True
     )
-    try:
-        await _send_setup_step1(interaction.user)
-    except discord.Forbidden:
-        howto = (
-            "📵 **Je n'ai pas pu t'envoyer un message privé !**\n\n"
-            "Pour recevoir des DMs du bot, active l'option dans Discord :\n"
-            "1. Clique sur le **nom du serveur** (en haut à gauche)\n"
-            "2. Va dans **Paramètres → Confidentialité**\n"
-            "3. Active ✅ **Autoriser les messages privés des membres du serveur**\n\n"
-            "Puis refais `/setup` ici 🙂"
-        )
-        e_err = discord.Embed(description=howto, color=0xE74C3C)
-        await interaction.followup.send(embed=e_err, ephemeral=True)
-    except Exception:
-        await interaction.followup.send("⚠️ Impossible d'envoyer un DM. Réessaie plus tard.", ephemeral=True)
+    await _send_setup_step1(ch, interaction.user)
 
 
 # ─── on_member_join : propose le setup automatiquement ───────────────────────
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    """Quand un nouveau membre rejoint, propose le setup en DM s'il a le rôle DreamTeam."""
-    # On attend un peu pour laisser les rôles s'assigner (webhooks, bots de roles, etc.)
-    await asyncio.sleep(3)
-    # Re-fetch pour avoir les rôles à jour
+    """Quand un nouveau membre DreamTeam rejoint, crée son canal setup automatiquement."""
+    await asyncio.sleep(5)  # Laisser le temps aux bots de rôles d'assigner
     try:
         member = await member.guild.fetch_member(member.id)
     except Exception:
         return
-    has_team_role = any(r.name == TEAM_ROLE_NAME for r in member.roles)
-    if not has_team_role:
-        return  # Pas un artiste du studio, on ne spamme pas
+    if not any(r.name == TEAM_ROLE_NAME for r in member.roles):
+        return
+    guild = member.guild
     try:
+        ch = await create_setup_channel(guild, member)
         e = discord.Embed(
             title=f"👋 Bienvenue {member.display_name} !",
             description=(
-                f"Tu viens de rejoindre **{member.guild.name}**.\n\n"
-                "Je suis le bot de time tracking du studio 🤖\n"
-                "Je t'aide à tracker tes heures, poster tes dailies et gérer tes congés.\n\n"
-                "**Avant de commencer, configure tes horaires en 1 minute :**\n"
-                "Clique sur le bouton ci-dessous ou tape `/setup` sur le serveur."
+                f"Tu viens de rejoindre **{guild.name}**.\n\n"
+                "Je suis le bot de time tracking 🤖\n"
+                "Je vais t'aider à tracker tes heures, poster tes dailies et gérer tes congés.\n\n"
+                "**Configurons tes horaires — ça prend 1 minute !**"
             ),
             color=0x3498DB
         )
-        e.set_footer(text="Mooncake Time Tracker · Bienvenue !")
-        view = View(timeout=86400)  # 24h
-
-        class StartSetupButton(Button):
-            def __init__(self):
-                super().__init__(label="🚀 Démarrer le setup", style=discord.ButtonStyle.green)
-            async def callback(self, interaction: discord.Interaction):
-                for item in self.view.children:
-                    item.disabled = True
-                await interaction.response.edit_message(view=self.view)
-                await _send_setup_step1(interaction.user)
-
-        view.add_item(StartSetupButton())
-        await member.send(embed=e, view=view)
+        await ch.send(member.mention, embed=e)
+        await asyncio.sleep(1)
+        await _send_setup_step1(ch, member)
+        # Notifier l'artiste dans son canal progress si existant
+        pch = find_progress_channel(guild, member)
+        if pch:
+            await pch.send(
+                f"👋 Bienvenue {member.mention} ! Ton canal de configuration est prêt : {ch.mention} 🎓"
+            )
     except discord.Forbidden:
-        # DMs bloqués : on envoie un message dans le canal progress s'il existe
-        for g in bot.guilds:
-            pch = find_progress_channel(g, member)
-            if pch:
-                try:
-                    await pch.send(
-                        f"👋 Bienvenue {member.mention} ! Pour te configurer, tape `/setup` ici.\n"
-                        f"*(Active les DMs du serveur dans tes paramètres Discord pour recevoir le tutoriel en privé !)*"
-                    )
-                except Exception:
-                    pass
-                break
+        # Pas les perms Manage Channels — fallback canal progress
+        pch = find_progress_channel(guild, member)
+        if pch:
+            try:
+                await pch.send(
+                    f"👋 Bienvenue {member.mention} ! Tape `/setup` pour configurer tes horaires.\n"
+                    f"*(Le bot n'a pas la permission de créer des canaux — contacte un admin.)*"
+                )
+            except Exception:
+                pass
     except Exception:
         pass
+
 
 
 # ═══════════════════ REACTION-BASED CONGÉ APPROVAL ═══════════════════════════
