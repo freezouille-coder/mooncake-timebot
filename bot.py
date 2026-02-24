@@ -235,9 +235,63 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_dailies_user_date ON dailies(user_id, date);
         CREATE INDEX IF NOT EXISTS idx_edits_status ON edit_requests(status);
         CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status);
+        CREATE TABLE IF NOT EXISTS meetings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            duration_min INTEGER DEFAULT 60,
+            organizer_id TEXT NOT NULL,
+            organizer_name TEXT NOT NULL,
+            voice_channel TEXT,
+            urgent INTEGER DEFAULT 0,
+            recurrence TEXT,
+            status TEXT DEFAULT 'voting',
+            reminded_30 INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS meeting_slots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            time TEXT NOT NULL,
+            label TEXT NOT NULL,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+        );
+        CREATE TABLE IF NOT EXISTS meeting_votes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            UNIQUE(slot_id, user_id),
+            FOREIGN KEY (slot_id) REFERENCES meeting_slots(id)
+        );
+        CREATE TABLE IF NOT EXISTS meeting_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings(date);
+        CREATE INDEX IF NOT EXISTS idx_meeting_members_mid ON meeting_members(meeting_id);
+        CREATE INDEX IF NOT EXISTS idx_meeting_votes_slot ON meeting_votes(slot_id);
+        CREATE TABLE IF NOT EXISTS meeting_rsvp (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            status TEXT NOT NULL,
+            suggestion TEXT,
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(meeting_id, user_id),
+            FOREIGN KEY (meeting_id) REFERENCES meetings(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_meeting_rsvp_mid ON meeting_rsvp(meeting_id);
     """)
     # Migration: ajouter lunch_minutes si colonne manquante (backward compat)
     try: conn.execute("ALTER TABLE user_schedules ADD COLUMN lunch_minutes INTEGER NOT NULL DEFAULT 60")
+    except: pass
+    try: conn.execute("ALTER TABLE meeting_rsvp ADD COLUMN suggestion TEXT")
     except: pass
     conn.commit(); conn.close()
 
@@ -1032,21 +1086,21 @@ class SetupStep3View(View):
             except Exception:
                 pass
 
-    @discord.ui.button(label="🍽️ 1h (défaut)", style=discord.ButtonStyle.primary)
-    async def btn_60(self, interaction: discord.Interaction, button: Button):
-        await self._apply(interaction, 60)
-
-    @discord.ui.button(label="⏱️ 45min", style=discord.ButtonStyle.secondary)
-    async def btn_45(self, interaction: discord.Interaction, button: Button):
-        await self._apply(interaction, 45)
-
     @discord.ui.button(label="⏱️ 30min", style=discord.ButtonStyle.secondary)
     async def btn_30(self, interaction: discord.Interaction, button: Button):
         await self._apply(interaction, 30)
 
-    @discord.ui.button(label="🚫 Pas de déduction auto", style=discord.ButtonStyle.danger)
-    async def btn_none(self, interaction: discord.Interaction, button: Button):
-        await self._apply(interaction, 0)
+    @discord.ui.button(label="🍽️ 1h (défaut)", style=discord.ButtonStyle.primary)
+    async def btn_60(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 60)
+
+    @discord.ui.button(label="🍽️ 1h30", style=discord.ButtonStyle.secondary)
+    async def btn_90(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 90)
+
+    @discord.ui.button(label="🍽️ 2h", style=discord.ButtonStyle.secondary)
+    async def btn_120(self, interaction: discord.Interaction, button: Button):
+        await self._apply(interaction, 120)
 
 
 class SetupStep4View(View):
@@ -1763,6 +1817,815 @@ async def cmd_mydailies(interaction: discord.Interaction, mois: Optional[int]=No
         e.set_footer(text=f"📊 {len(dailies)}/{len(wdates)} dailies")
         await interaction.response.send_message(embed=e, ephemeral=True)
     finally: conn.close()
+
+
+# ═══════════════════ MEETING SYSTEM ══════════════════════════════════════════
+
+MEETING_CHANNEL_NAME  = "meetings"
+MEETING_VOTE_TIMEOUT  = 3600 * 6   # 6h max pour voter (si vote activé)
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def parse_time_str(text):
+    """'16h', '16h30', '16:30' → (h, m) ou None."""
+    if not text: return None
+    text = text.strip().lower().replace("h", ":").rstrip(":")
+    parts = text.split(":")
+    try:
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return (h, m)
+    except: pass
+    return None
+
+def parse_relative_date(text, ref_tz="CET"):
+    """'demain', 'lundi', '25/02/2026' → 'YYYY-MM-DD' ou None."""
+    if not text: return None
+    text = text.strip().lower()
+    zi = get_zoneinfo(ref_tz)
+    today = datetime.now(zi).date()
+    if text in ("aujourd'hui", "today", "auj"):  return today.strftime("%Y-%m-%d")
+    if text in ("demain", "tomorrow"):            return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    if text in ("après-demain", "apres-demain"):  return (today + timedelta(days=2)).strftime("%Y-%m-%d")
+    jours = {"lundi":0,"mardi":1,"mercredi":2,"jeudi":3,"vendredi":4,"samedi":5,"dimanche":6}
+    if text in jours:
+        target_wd = jours[text]
+        days_ahead = (target_wd - today.weekday()) % 7 or 7
+        return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+    return parse_date(text)
+
+def fmt_datetime(date_str, time_str):
+    JOURS_FR  = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
+    MOIS_SHORT = ["","janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."]
+    try:
+        dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        h_str = f"{dt.hour}h{dt.minute:02d}" if dt.minute else f"{dt.hour}h"
+        return f"{JOURS_FR[dt.weekday()]} {dt.day} {MOIS_SHORT[dt.month]} à {h_str}"
+    except:
+        return f"{date_str} {time_str}"
+
+def recurrence_label(rec_type):
+    return {"weekly":"hebdomadaire 🔁","biweekly":"bi-mensuel 🔁","monthly":"mensuel 🔁"}.get(rec_type or "", "")
+
+def get_member_conflicts(conn, guild, member_ids, date_str, hour, minute, duration_min=60, exclude_id=None):
+    start_dt = datetime.strptime(f"{date_str} {hour:02d}:{minute:02d}", "%Y-%m-%d %H:%M")
+    end_dt   = start_dt + timedelta(minutes=duration_min)
+    q = "SELECT m.* FROM meetings m WHERE m.date=? AND m.status != 'cancelled'"
+    if exclude_id: q += f" AND m.id != {exclude_id}"
+    conflicts = []
+    for m in conn.execute(q, (date_str,)).fetchall():
+        m_start = datetime.strptime(f"{m['date']} {m['time']}", "%Y-%m-%d %H:%M")
+        m_end   = m_start + timedelta(minutes=m["duration_min"] or 60)
+        if start_dt < m_end and end_dt > m_start:
+            m_members = [r["user_id"] for r in conn.execute(
+                "SELECT user_id FROM meeting_members WHERE meeting_id=?", (m["id"],)).fetchall()]
+            overlap = [uid for uid in member_ids if uid in m_members]
+            if overlap: conflicts.append((m, overlap))
+    return conflicts
+
+# ─── Modal : proposer un autre moment ────────────────────────────────────────
+
+class ProposeTimeModal(discord.ui.Modal, title="🕐 Proposer un autre moment"):
+    suggestion = discord.ui.TextInput(
+        label="Quel moment te conviendrait ?",
+        placeholder="Ex: vendredi 16h, ou jeudi matin...",
+        max_length=200,
+        style=discord.TextStyle.short
+    )
+    reason = discord.ui.TextInput(
+        label="Raison (optionnel)",
+        placeholder="Ex: j'ai un autre meeting à 16h",
+        required=False,
+        max_length=300,
+        style=discord.TextStyle.short
+    )
+
+    def __init__(self, meeting_id: int, title_str: str, organizer_id: str, guild_id: int):
+        super().__init__()
+        self.meeting_id    = meeting_id
+        self.title_str     = title_str
+        self.organizer_id  = organizer_id
+        self.guild_id      = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        conn = get_db()
+        try:
+            # Enregistrer la suggestion en DB
+            conn.execute(
+                "INSERT INTO meeting_rsvp (meeting_id, user_id, username, status, suggestion) "
+                "VALUES (?,?,?,'suggest',?) "
+                "ON CONFLICT(meeting_id, user_id) DO UPDATE SET status='suggest', suggestion=?, updated_at=datetime('now')",
+                (self.meeting_id, str(interaction.user.id), interaction.user.display_name,
+                 self.suggestion.value, self.suggestion.value)
+            )
+            conn.commit()
+
+            # Compter les suggestions
+            nb_suggest = conn.execute(
+                "SELECT COUNT(*) as c FROM meeting_rsvp WHERE meeting_id=? AND status='suggest'",
+                (self.meeting_id,)
+            ).fetchone()["c"]
+            suggest_rows = conn.execute(
+                "SELECT username, suggestion FROM meeting_rsvp WHERE meeting_id=? AND status='suggest'",
+                (self.meeting_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+        await interaction.response.send_message(
+            f"✅ Ta suggestion a été transmise à l'organisateur !",
+            ephemeral=True
+        )
+
+        # Notifier l'organisateur dans son canal progress (ou en admin channel)
+        guild = interaction.guild
+        organizer = guild.get_member(int(self.organizer_id)) if self.organizer_id else None
+        notif_ch = (find_progress_channel(guild, organizer) if organizer else None) \
+                   or get_admin_channel(guild)
+        if notif_ch:
+            reason_txt = f"\n> _{self.reason.value}_" if self.reason.value else ""
+            lines = "\n".join(f"• **{r['username']}** : {r['suggestion']}" for r in suggest_rows)
+            alert = ""
+            if nb_suggest >= 2:
+                alert = f"\n\n⚠️ **{nb_suggest} personnes proposent un autre créneau** — envisage de relancer un `/createmeeting` avec vote."
+            try:
+                await notif_ch.send(
+                    f"🔄 **{interaction.user.display_name}** propose un autre moment pour **{self.title_str}** :\n"
+                    f"> {self.suggestion.value}{reason_txt}\n\n"
+                    f"**Toutes les suggestions ({nb_suggest}) :**\n{lines}{alert}"
+                )
+            except: pass
+
+
+# ─── RSVP View (boutons sur la notif de chaque invité) ───────────────────────
+
+class MeetingRSVPView(View):
+    """✅ Je serai là  /  ❌ Je ne peux pas  /  🔄 Proposer un autre moment"""
+
+    def __init__(self, meeting_id: int, title: str, organizer_id: str):
+        super().__init__(timeout=3600 * 72)   # 72h
+        self.meeting_id   = meeting_id
+        self.title        = title
+        self.organizer_id = organizer_id
+
+    def _rsvp_summary(self, conn):
+        yes = conn.execute("SELECT username FROM meeting_rsvp WHERE meeting_id=? AND status='yes'",  (self.meeting_id,)).fetchall()
+        no  = conn.execute("SELECT username FROM meeting_rsvp WHERE meeting_id=? AND status='no'",   (self.meeting_id,)).fetchall()
+        sug = conn.execute("SELECT username FROM meeting_rsvp WHERE meeting_id=? AND status='suggest'", (self.meeting_id,)).fetchall()
+        yes_s = ", ".join(r["username"] for r in yes) or "_aucun_"
+        no_s  = ", ".join(r["username"] for r in no)  or "_aucun_"
+        sug_s = ", ".join(r["username"] for r in sug) or "_aucun_"
+        return yes_s, no_s, sug_s
+
+    @discord.ui.button(label="✅ Je serai là !", style=discord.ButtonStyle.green,   custom_id="rsvp_yes")
+    async def btn_yes(self, interaction: discord.Interaction, button: Button):
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO meeting_rsvp (meeting_id, user_id, username, status) VALUES (?,?,?,'yes') "
+                "ON CONFLICT(meeting_id, user_id) DO UPDATE SET status='yes', updated_at=datetime('now')",
+                (self.meeting_id, str(interaction.user.id), interaction.user.display_name)
+            )
+            conn.commit()
+            yes_s, no_s, sug_s = self._rsvp_summary(conn)
+        finally:
+            conn.close()
+        await interaction.response.send_message(
+            f"✅ Noté, tu seras là pour **{self.title}** !\n\n"
+            f"✅ Présents : {yes_s}\n❌ Absents : {no_s}\n🔄 Autre moment : {sug_s}",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="❌ Je ne peux pas", style=discord.ButtonStyle.danger,  custom_id="rsvp_no")
+    async def btn_no(self, interaction: discord.Interaction, button: Button):
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO meeting_rsvp (meeting_id, user_id, username, status) VALUES (?,?,?,'no') "
+                "ON CONFLICT(meeting_id, user_id) DO UPDATE SET status='no', updated_at=datetime('now')",
+                (self.meeting_id, str(interaction.user.id), interaction.user.display_name)
+            )
+            conn.commit()
+            yes_s, no_s, sug_s = self._rsvp_summary(conn)
+        finally:
+            conn.close()
+        await interaction.response.send_message(
+            f"❌ Noté, tu ne pourras pas être là pour **{self.title}**.\n\n"
+            f"✅ Présents : {yes_s}\n❌ Absents : {no_s}\n🔄 Autre moment : {sug_s}",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="🔄 Autre moment...", style=discord.ButtonStyle.secondary, custom_id="rsvp_suggest")
+    async def btn_suggest(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(
+            ProposeTimeModal(self.meeting_id, self.title, self.organizer_id, interaction.guild_id)
+        )
+
+
+# ─── Vote View (optionnel, activé avec vote=True dans /createmeeting) ─────────
+
+class MeetingVoteView(View):
+    """Boutons de vote par créneau — utilisé seulement quand vote=True."""
+
+    def __init__(self, meeting_id: int, slots: list, total_members: int):
+        super().__init__(timeout=MEETING_VOTE_TIMEOUT)
+        self.meeting_id    = meeting_id
+        self.total_members = total_members
+        for slot in slots:
+            btn = Button(label=slot["label"], style=discord.ButtonStyle.secondary,
+                         custom_id=f"mslot_{slot['id']}")
+            btn.callback = self._make_callback(slot["id"], slot["label"])
+            self.add_item(btn)
+
+    def _make_callback(self, slot_id: int, label: str):
+        async def callback(interaction: discord.Interaction):
+            uid = str(interaction.user.id)
+            conn = get_db()
+            try:
+                # Vérifier que l'user est invité
+                if not conn.execute(
+                    "SELECT id FROM meeting_members WHERE meeting_id=? AND user_id=?",
+                    (self.meeting_id, uid)
+                ).fetchone():
+                    return await interaction.response.send_message("⚠️ Tu n'es pas invité à ce meeting.", ephemeral=True)
+
+                # Toggle vote
+                if conn.execute("SELECT id FROM meeting_votes WHERE slot_id=? AND user_id=?", (slot_id, uid)).fetchone():
+                    conn.execute("DELETE FROM meeting_votes WHERE slot_id=? AND user_id=?", (slot_id, uid))
+                    toggled = False
+                else:
+                    conn.execute("INSERT INTO meeting_votes (slot_id, user_id, username) VALUES (?,?,?)",
+                                 (slot_id, uid, interaction.user.display_name))
+                    toggled = True
+                conn.commit()
+
+                # Résumé votes
+                slots     = conn.execute("SELECT * FROM meeting_slots WHERE meeting_id=?", (self.meeting_id,)).fetchall()
+                best_slot = None; best_count = -1; lines = []
+                for s in slots:
+                    votes = conn.execute("SELECT username FROM meeting_votes WHERE slot_id=?", (s["id"],)).fetchall()
+                    names = [v["username"] for v in votes]; count = len(names)
+                    my_v  = " ✅" if any(v["username"] == interaction.user.display_name for v in votes) else ""
+                    lines.append(f"`{s['label']}` {'█'*count or '·'} **{count}**{my_v} — {', '.join(names) or '_aucun_'}")
+                    if count > best_count: best_count = count; best_slot = s
+
+                # Membres ayant voté au moins une fois
+                voted = conn.execute(
+                    "SELECT COUNT(DISTINCT mv.user_id) as c FROM meeting_votes mv "
+                    "JOIN meeting_slots ms ON ms.id=mv.slot_id WHERE ms.meeting_id=?",
+                    (self.meeting_id,)
+                ).fetchone()["c"]
+
+                everyone_voted = voted >= self.total_members > 0
+
+                if everyone_voted and best_slot and best_count > 0:
+                    if conn.execute("SELECT status FROM meetings WHERE id=?", (self.meeting_id,)).fetchone()["status"] == "voting":
+                        meeting, slot_row, _ = await _notify_meeting_confirmed(conn, interaction.guild, self.meeting_id, best_slot["id"])
+                        for item in self.children: item.disabled = True
+                        try: await interaction.message.edit(view=self)
+                        except: pass
+                        return await interaction.response.send_message(
+                            f"{'✅' if toggled else '❌'} Vote pour **{label}**\n\n"
+                            f"🎉 **Tout le monde a voté ! Créneau confirmé : {best_slot['label']}**\n"
+                            f"📅 {fmt_datetime(meeting['date'], slot_row['time'])}",
+                            ephemeral=True
+                        )
+
+                await interaction.response.send_message(
+                    f"{'✅' if toggled else '❌'} Vote pour **{label}**\n\n"
+                    f"**Votes ({voted}/{self.total_members}) :**\n" + "\n".join(lines) +
+                    (f"\n\n🏆 Favori actuel : **{best_slot['label']}**" if best_slot and best_count > 0 else ""),
+                    ephemeral=True
+                )
+            except Exception as ex:
+                print(f"[VoteCallback ERROR] {ex}")
+                try: await interaction.response.send_message(f"⚠️ Erreur : `{ex}`", ephemeral=True)
+                except: pass
+            finally:
+                conn.close()
+        return callback
+
+
+# ─── Shared : notifier confirmation ──────────────────────────────────────────
+
+async def _notify_meeting_confirmed(conn, guild, meeting_id: int, slot_id: int):
+    """Met le meeting en 'confirmed', envoie les notifs RSVP à tous les invités."""
+    slot = conn.execute("SELECT * FROM meeting_slots WHERE id=?", (slot_id,)).fetchone()
+    conn.execute("UPDATE meetings SET time=?, status='confirmed' WHERE id=?", (slot["time"], meeting_id))
+    conn.commit()
+    meeting = conn.execute("SELECT * FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+    members = conn.execute("SELECT * FROM meeting_members WHERE meeting_id=?", (meeting_id,)).fetchall()
+    notified = 0
+    for m_row in members:
+        member = guild.get_member(int(m_row["user_id"]))
+        if not member: continue
+        pch = find_progress_channel(guild, member)
+        if not pch: continue
+        e = discord.Embed(
+            title="✅ Meeting confirmé !",
+            description=(
+                f"**{meeting['title']}**\n"
+                f"📅 {fmt_datetime(meeting['date'], slot['time'])}\n"
+                f"⏱️ Durée : {meeting['duration_min']} min\n"
+                f"🎤 Salon : {meeting['voice_channel'] or '_non précisé_'}"
+            ),
+            color=0x2ECC71
+        )
+        try:
+            await pch.send(member.mention, embed=e,
+                           view=MeetingRSVPView(meeting_id, meeting["title"], meeting["organizer_id"]))
+            notified += 1
+        except: pass
+    return meeting, slot, notified
+
+
+# ─── /createmeeting ──────────────────────────────────────────────────────────
+
+@bot.tree.command(name="createmeeting", description="📅 Créer un meeting")
+@app_commands.describe(
+    date      = "Date (ex: demain, lundi, 25/02/2026)",
+    time      = "Heure (ex: 16h, 14h30)",
+    title     = "Sujet du meeting",
+    teams     = "Rôles invités séparés par virgules (ex: Animation Team, LookDev Team)",
+    voice     = "Salon vocal (ex: lookdev, general)",
+    duration  = "Durée en minutes (défaut: 60)",
+    urgent    = "Meeting urgent ?",
+    recurrence= "Récurrence",
+    vote      = "Proposer plusieurs créneaux au vote ? (active le mode vote)",
+    slots     = "Créneaux au vote, virgules (ex: 15h,16h,17h) — requis si vote=True",
+)
+@app_commands.choices(recurrence=[
+    app_commands.Choice(name="Pas de récurrence", value="none"),
+    app_commands.Choice(name="Hebdomadaire 🔁",   value="weekly"),
+    app_commands.Choice(name="Bi-mensuel 🔁",     value="biweekly"),
+    app_commands.Choice(name="Mensuel 🔁",        value="monthly"),
+])
+async def cmd_createmeeting(
+    interaction : discord.Interaction,
+    date        : str,
+    title       : str,
+    teams       : str,
+    time        : Optional[str] = None,
+    voice       : Optional[str] = None,
+    duration    : int   = 60,
+    urgent      : bool  = False,
+    recurrence  : str   = "none",
+    vote        : bool  = False,
+    slots       : Optional[str] = None,
+):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("⚠️ Réservé aux admins.", ephemeral=True)
+
+    guild      = interaction.guild
+    organizer  = interaction.user
+
+    # ── Validation ──
+    date_str = parse_relative_date(date)
+    if not date_str:
+        return await interaction.response.send_message(f"⚠️ Date invalide : `{date}`", ephemeral=True)
+
+    if vote:
+        if not slots:
+            return await interaction.response.send_message(
+                "⚠️ `slots` est requis quand `vote=True`. Ex: `15h,16h,17h`", ephemeral=True)
+        raw_slots    = [s.strip() for s in slots.split(",") if s.strip()]
+        parsed_slots = []
+        for rs in raw_slots:
+            t = parse_time_str(rs)
+            if t: parsed_slots.append(t)
+            else: return await interaction.response.send_message(f"⚠️ Créneau invalide : `{rs}`", ephemeral=True)
+        first_h, first_m = parsed_slots[0]
+        first_time = f"{first_h:02d}:{first_m:02d}"
+        status = "voting"
+    else:
+        if not time:
+            return await interaction.response.send_message("⚠️ `time` est requis. Ex: `16h`", ephemeral=True)
+        t = parse_time_str(time)
+        if not t:
+            return await interaction.response.send_message(f"⚠️ Heure invalide : `{time}`", ephemeral=True)
+        first_h, first_m = t
+        first_time = f"{first_h:02d}:{first_m:02d}"
+        parsed_slots = [(first_h, first_m)]
+        status = "confirmed"
+
+    # ── Résoudre les membres ──
+    team_names      = [t.strip() for t in teams.split(",") if t.strip()]
+    invited_members = set()
+    not_found_teams = []
+    for tname in team_names:
+        role = discord.utils.find(lambda r, n=tname: r.name.lower() == n.lower(), guild.roles)
+        if role:
+            for m in role.members:
+                if not m.bot: invited_members.add(m)
+        else:
+            not_found_teams.append(tname)
+
+    if not invited_members:
+        return await interaction.response.send_message(
+            f"⚠️ Aucun membre trouvé pour : {', '.join(team_names)}", ephemeral=True)
+
+    member_ids = [str(m.id) for m in invited_members]
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO meetings (title, date, time, duration_min, organizer_id, organizer_name, "
+            "voice_channel, urgent, recurrence, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (title, date_str, first_time, duration,
+             str(organizer.id), organizer.display_name,
+             voice, 1 if urgent else 0, recurrence if recurrence != "none" else None, status)
+        )
+        meeting_id = conn.lastrowid
+
+        for m in invited_members:
+            conn.execute("INSERT INTO meeting_members (meeting_id, user_id, username) VALUES (?,?,?)",
+                         (meeting_id, str(m.id), m.display_name))
+
+        slot_rows = []
+        for (h, mi) in parsed_slots:
+            t_str   = f"{h:02d}:{mi:02d}"
+            h_label = f"{h}h{mi:02d}" if mi else f"{h}h"
+            conn.execute("INSERT INTO meeting_slots (meeting_id, time, label) VALUES (?,?,?)",
+                         (meeting_id, t_str, h_label))
+            slot_rows.append({"id": conn.lastrowid, "time": t_str, "label": h_label})
+
+        conn.commit()
+
+        # Conflits
+        conflict_lines = []
+        for (h, mi) in parsed_slots:
+            for (cm, overlap_ids) in get_member_conflicts(conn, guild, member_ids, date_str, h, mi, duration, meeting_id):
+                names = [guild.get_member(int(uid)).display_name if guild.get_member(int(uid)) else uid for uid in overlap_ids]
+                t_lbl = f"{h}h{mi:02d}" if mi else f"{h}h"
+                conflict_lines.append(f"⚠️ `{t_lbl}` — conflit avec **{cm['title']}** pour : {', '.join(names)}")
+    finally:
+        conn.close()
+
+    await interaction.response.defer(ephemeral=True)
+
+    urgent_tag = "🚨 **URGENT** — " if urgent else ""
+    rec_tag    = f"\n🔁 Récurrence : **{recurrence_label(recurrence)}**" if recurrence != "none" else ""
+    color      = 0xE74C3C if urgent else 0x3498DB
+
+    if status == "voting":
+        desc = (
+            f"{urgent_tag}**{title}**\n"
+            f"📅 {fmt_datetime(date_str, first_time)} *(créneau à confirmer)*\n"
+            f"⏱️ Durée : **{duration} min**  ·  🎤 {voice or '_salon non précisé_'}\n"
+            f"👥 {len(invited_members)} personnes invitées{rec_tag}\n\n"
+            f"**Vote ouvert — clique sur le créneau qui te convient ↓**\n*(tu peux voter pour plusieurs)*"
+        )
+        pub_view = MeetingVoteView(meeting_id, slot_rows, len(invited_members))
+    else:
+        desc = (
+            f"{urgent_tag}**{title}**\n"
+            f"📅 {fmt_datetime(date_str, first_time)}\n"
+            f"⏱️ Durée : **{duration} min**  ·  🎤 {voice or '_salon non précisé_'}\n"
+            f"👥 {len(invited_members)} personnes invitées{rec_tag}"
+        )
+        pub_view = None
+
+    e = discord.Embed(title="📅 Nouveau Meeting", description=desc, color=color)
+    e.set_footer(text=f"Organisé par {organizer.display_name} · ID #{meeting_id}")
+    if not_found_teams:
+        e.add_field(name="⚠️ Rôles introuvables",  value=", ".join(not_found_teams), inline=False)
+    if conflict_lines:
+        e.add_field(name="⚠️ Conflits détectés",   value="\n".join(conflict_lines[:5]), inline=False)
+
+    pub_ch = discord.utils.get(guild.text_channels, name=MEETING_CHANNEL_NAME) \
+             or discord.utils.get(guild.text_channels, name=SUMMARY_CHANNEL_NAME)
+    announcement_msg = None
+    if pub_ch:
+        announcement_msg = await pub_ch.send(embed=e, view=pub_view)
+
+    # ── Notif progress ──
+    notified = 0
+    for m in invited_members:
+        pch = find_progress_channel(guild, m)
+        if not pch: continue
+        notif_e = discord.Embed(
+            title = "📅 Tu es invité·e à un meeting !" + (" 🚨" if urgent else ""),
+            description=(
+                f"**{title}**\n"
+                f"📅 {fmt_datetime(date_str, first_time)}"
+                + (" *(vote en cours — choisis ton créneau)*" if status == "voting" else "") + "\n"
+                f"⏱️ {duration} min  ·  🎤 {voice or 'salon non précisé'}"
+                + (f"\n\n➡️ Voter : {announcement_msg.jump_url}" if announcement_msg and status == "voting" else "")
+            ),
+            color=color
+        )
+        rsvp_v = MeetingRSVPView(meeting_id, title, str(organizer.id)) if status == "confirmed" else None
+        try:
+            await pch.send(m.mention, embed=notif_e, view=rsvp_v)
+            notified += 1
+        except: pass
+
+    summary = [
+        f"✅ Meeting **#{meeting_id}** créé — **{title}**",
+        f"📅 {fmt_datetime(date_str, first_time)}" + (" · 🗳️ Vote ouvert" if status == "voting" else ""),
+        f"👥 {len(invited_members)} membres · {notified} notifiés",
+    ]
+    if conflict_lines:
+        summary.append("\n**Conflits :**\n" + "\n".join(conflict_lines))
+    await interaction.followup.send("\n".join(summary), ephemeral=True)
+
+
+# ─── /cancelmeeting ──────────────────────────────────────────────────────────
+
+@bot.tree.command(name="cancelmeeting", description="❌ Annuler un meeting")
+@app_commands.describe(meeting_id="ID du meeting")
+async def cmd_cancelmeeting(interaction: discord.Interaction, meeting_id: int):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("⚠️ Réservé aux admins.", ephemeral=True)
+    conn = get_db()
+    try:
+        meeting = conn.execute("SELECT * FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+        if not meeting:
+            return await interaction.response.send_message(f"⚠️ Meeting #{meeting_id} introuvable.", ephemeral=True)
+        conn.execute("UPDATE meetings SET status='cancelled' WHERE id=?", (meeting_id,))
+        conn.commit()
+        members = conn.execute("SELECT * FROM meeting_members WHERE meeting_id=?", (meeting_id,)).fetchall()
+    finally:
+        conn.close()
+
+    guild = interaction.guild
+    for m_row in members:
+        member = guild.get_member(int(m_row["user_id"]))
+        if not member: continue
+        pch = find_progress_channel(guild, member)
+        if pch:
+            try:
+                await pch.send(
+                    f"❌ {member.mention} — Le meeting **{meeting['title']}** "
+                    f"({fmt_datetime(meeting['date'], meeting['time'])}) a été **annulé**."
+                )
+            except: pass
+
+    await interaction.response.send_message(
+        f"✅ Meeting **#{meeting_id} — {meeting['title']}** annulé. {len(members)} membres notifiés.",
+        ephemeral=True
+    )
+
+
+# ─── /closevote (uniquement si vote=True) ────────────────────────────────────
+
+@bot.tree.command(name="closevote", description="🗳️ Clore le vote et confirmer le créneau gagnant")
+@app_commands.describe(meeting_id="ID du meeting")
+async def cmd_closevote(interaction: discord.Interaction, meeting_id: int):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("⚠️ Réservé aux admins.", ephemeral=True)
+    conn = get_db()
+    try:
+        meeting = conn.execute("SELECT * FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+        if not meeting:
+            return await interaction.response.send_message(f"⚠️ Meeting #{meeting_id} introuvable.", ephemeral=True)
+        if meeting["status"] != "voting":
+            return await interaction.response.send_message(
+                f"⚠️ Ce meeting n'est pas en cours de vote (statut: `{meeting['status']}`).", ephemeral=True)
+        slots   = conn.execute("SELECT * FROM meeting_slots WHERE meeting_id=?", (meeting_id,)).fetchall()
+        results = []
+        for s in slots:
+            votes = conn.execute("SELECT username FROM meeting_votes WHERE slot_id=?", (s["id"],)).fetchall()
+            results.append({"slot": s, "count": len(votes), "names": [v["username"] for v in votes]})
+        results.sort(key=lambda x: x["count"], reverse=True)
+    finally:
+        conn.close()
+
+    if not results:
+        return await interaction.response.send_message("⚠️ Aucun créneau pour ce meeting.", ephemeral=True)
+
+    lines  = []
+    for r in results:
+        bar = "█" * r["count"] if r["count"] else "·"
+        lines.append(f"`{r['slot']['label']}` {bar} **{r['count']}** — {', '.join(r['names']) or '_aucun_'}")
+    winner = results[0]
+
+    e = discord.Embed(
+        title       = f"🗳️ Résultats du vote — {meeting['title']}",
+        description = "\n".join(lines) + f"\n\n🏆 **Gagnant : {winner['slot']['label']}** ({winner['count']} vote(s))",
+        color       = 0x9B59B6
+    )
+
+    class ClosevoteConfirmView(View):
+        def __init__(self): super().__init__(timeout=3600*12)
+
+        @discord.ui.button(label="✅ Confirmer ce créneau", style=discord.ButtonStyle.green)
+        async def btn_ok(self, itr: discord.Interaction, btn: Button):
+            if not is_admin(itr): return await itr.response.send_message("⚠️ Admins seulement.", ephemeral=True)
+            conn2 = get_db()
+            try:
+                mtg, sl, nb = await _notify_meeting_confirmed(conn2, itr.guild, meeting_id, winner["slot"]["id"])
+            finally:
+                conn2.close()
+            for item in self.children: item.disabled = True
+            await itr.response.edit_message(view=self)
+            await itr.followup.send(
+                f"✅ Créneau **{winner['slot']['label']}** confirmé. {nb} membres notifiés.", ephemeral=True)
+
+        @discord.ui.button(label="🔁 Relancer un vote", style=discord.ButtonStyle.secondary)
+        async def btn_revote(self, itr: discord.Interaction, btn: Button):
+            if not is_admin(itr): return await itr.response.send_message("⚠️ Admins seulement.", ephemeral=True)
+            for item in self.children: item.disabled = True
+            await itr.response.edit_message(view=self)
+            await itr.followup.send("Crée un nouveau `/createmeeting` avec `vote:True` pour relancer.", ephemeral=True)
+
+    await interaction.response.send_message(embed=e, view=ClosevoteConfirmView(), ephemeral=True)
+
+
+# ─── /rsvpstatus ─────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="rsvpstatus", description="📊 Voir les RSVP d'un meeting (admin)")
+@app_commands.describe(meeting_id="ID du meeting")
+async def cmd_rsvpstatus(interaction: discord.Interaction, meeting_id: int):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("⚠️ Réservé aux admins.", ephemeral=True)
+    conn = get_db()
+    try:
+        meeting = conn.execute("SELECT * FROM meetings WHERE id=?", (meeting_id,)).fetchone()
+        if not meeting:
+            return await interaction.response.send_message(f"⚠️ Meeting #{meeting_id} introuvable.", ephemeral=True)
+        members  = conn.execute("SELECT * FROM meeting_members WHERE meeting_id=?", (meeting_id,)).fetchall()
+        rsvps    = conn.execute("SELECT * FROM meeting_rsvp WHERE meeting_id=?",    (meeting_id,)).fetchall()
+    finally:
+        conn.close()
+
+    rsvp_map = {r["user_id"]: r for r in rsvps}
+    yes_l, no_l, sug_l, pending_l = [], [], [], []
+    for mr in members:
+        r = rsvp_map.get(mr["user_id"])
+        if   not r:              pending_l.append(mr["username"])
+        elif r["status"]=="yes": yes_l.append(mr["username"])
+        elif r["status"]=="no":  no_l.append(mr["username"])
+        elif r["status"]=="suggest":
+            sug_l.append(f"**{mr['username']}** : {r['suggestion']}")
+
+    e = discord.Embed(
+        title       = f"📊 RSVP — {meeting['title']}",
+        description = f"📅 {fmt_datetime(meeting['date'], meeting['time'])} · {len(members)} invités",
+        color       = 0x3498DB
+    )
+    if yes_l:     e.add_field(name=f"✅ Présents ({len(yes_l)})",          value=", ".join(yes_l),    inline=False)
+    if no_l:      e.add_field(name=f"❌ Absents ({len(no_l)})",            value=", ".join(no_l),     inline=False)
+    if sug_l:     e.add_field(name=f"🔄 Autre moment ({len(sug_l)})",      value="\n".join(sug_l),    inline=False)
+    if pending_l: e.add_field(name=f"❓ Pas encore répondu ({len(pending_l)})", value=", ".join(pending_l), inline=False)
+
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+# ─── /meetings ───────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="meetings", description="📋 Meetings à venir")
+async def cmd_meetings(interaction: discord.Interaction, dept: Optional[str] = None):
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM meetings WHERE date >= ? AND status != 'cancelled' ORDER BY date, time",
+            (today_str(),)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return await interaction.response.send_message("📅 Aucun meeting à venir.", ephemeral=True)
+
+    e = discord.Embed(title="📅 Meetings à venir", color=0x3498DB)
+    for m in rows[:10]:
+        rec          = f" {recurrence_label(m['recurrence'])}" if m["recurrence"] else ""
+        status_icon  = {"voting":"🗳️","confirmed":"✅","cancelled":"❌"}.get(m["status"], "📅")
+        urgent_tag   = " 🚨" if m["urgent"] else ""
+        e.add_field(
+            name  = f"{status_icon} #{m['id']} — {m['title']}{urgent_tag}{rec}",
+            value = f"📅 {fmt_datetime(m['date'], m['time'])} · ⏱️ {m['duration_min']}min · 🎤 {m['voice_channel'] or 'N/A'}",
+            inline=False
+        )
+    if len(rows) > 10:
+        e.set_footer(text=f"+{len(rows)-10} autres meetings non affichés")
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+# ─── /myagenda ───────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="myagenda", description="📆 Tes meetings à venir")
+async def cmd_myagenda(interaction: discord.Interaction):
+    uid = str(interaction.user.id)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT m.* FROM meetings m "
+            "JOIN meeting_members mm ON mm.meeting_id=m.id "
+            "WHERE mm.user_id=? AND m.date >= ? AND m.status != 'cancelled' ORDER BY m.date, m.time",
+            (uid, today_str())
+        ).fetchall()
+        rsvps = {r["meeting_id"]: r for r in conn.execute(
+            "SELECT * FROM meeting_rsvp WHERE user_id=?", (uid,)
+        ).fetchall()}
+    finally:
+        conn.close()
+
+    if not rows:
+        return await interaction.response.send_message("📅 Aucun meeting à venir pour toi.", ephemeral=True)
+
+    e = discord.Embed(title=f"📆 Ton agenda — {interaction.user.display_name}", color=0x3498DB)
+    for m in rows[:10]:
+        rec         = f" {recurrence_label(m['recurrence'])}" if m["recurrence"] else ""
+        status_icon = {"voting":"🗳️","confirmed":"✅"}.get(m["status"], "📅")
+        urgent_tag  = " 🚨" if m["urgent"] else ""
+        r           = rsvps.get(m["id"])
+        rsvp_tag    = ""
+        if m["status"] == "confirmed":
+            if not r:               rsvp_tag = " · ❓ RSVP en attente"
+            elif r["status"]=="yes": rsvp_tag = " · ✅ Présent"
+            elif r["status"]=="no":  rsvp_tag = " · ❌ Absent"
+            elif r["status"]=="suggest": rsvp_tag = " · 🔄 Autre moment proposé"
+        e.add_field(
+            name  = f"{status_icon} {m['title']}{urgent_tag}{rec}",
+            value = f"📅 {fmt_datetime(m['date'], m['time'])} · ⏱️ {m['duration_min']}min · 🎤 {m['voice_channel'] or 'N/A'}{rsvp_tag}",
+            inline=False
+        )
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+# ─── Tâche : rappel 30min avant ──────────────────────────────────────────────
+
+@tasks.loop(minutes=5)
+async def meeting_reminders():
+    conn = get_db()
+    try:
+        now_dt = now()
+        lo = (now_dt + timedelta(minutes=25)).strftime("%H:%M")
+        hi = (now_dt + timedelta(minutes=35)).strftime("%H:%M")
+        rows = conn.execute(
+            "SELECT * FROM meetings WHERE date=? AND time >= ? AND time <= ? "
+            "AND status='confirmed' AND reminded_30=0",
+            (now_dt.strftime("%Y-%m-%d"), lo, hi)
+        ).fetchall()
+        for m in rows:
+            conn.execute("UPDATE meetings SET reminded_30=1 WHERE id=?", (m["id"],))
+            conn.commit()
+            members = conn.execute("SELECT * FROM meeting_members WHERE meeting_id=?", (m["id"],)).fetchall()
+            for g in bot.guilds:
+                for m_row in members:
+                    member = g.get_member(int(m_row["user_id"]))
+                    if not member: continue
+                    pch = find_progress_channel(g, member)
+                    if pch:
+                        try:
+                            await pch.send(
+                                f"⏰ {member.mention} — **{m['title']}** dans **30 minutes** !\n"
+                                f"📅 {fmt_datetime(m['date'], m['time'])} · 🎤 {m['voice_channel'] or 'salon non précisé'}"
+                            )
+                        except: pass
+    finally:
+        conn.close()
+
+
+# ─── Tâche : recréer les meetings récurrents ─────────────────────────────────
+
+@tasks.loop(time=utc_time(1, 0))
+async def meeting_recurrence():
+    conn = get_db()
+    try:
+        today = today_str()
+        for m in conn.execute(
+            "SELECT * FROM meetings WHERE recurrence IS NOT NULL AND recurrence != '' "
+            "AND status='confirmed' AND date=?", (today,)
+        ).fetchall():
+            delta = {"weekly": timedelta(weeks=1), "biweekly": timedelta(weeks=2),
+                     "monthly": timedelta(days=30)}.get(m["recurrence"])
+            if not delta: continue
+            next_str = (datetime.strptime(m["date"], "%Y-%m-%d") + delta).strftime("%Y-%m-%d")
+            if conn.execute("SELECT id FROM meetings WHERE title=? AND date=? AND recurrence=?",
+                            (m["title"], next_str, m["recurrence"])).fetchone():
+                continue
+            conn.execute(
+                "INSERT INTO meetings (title, date, time, duration_min, organizer_id, organizer_name, "
+                "voice_channel, urgent, recurrence, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (m["title"], next_str, m["time"], m["duration_min"],
+                 m["organizer_id"], m["organizer_name"], m["voice_channel"], 0, m["recurrence"], "confirmed")
+            )
+            new_id  = conn.lastrowid
+            members = conn.execute("SELECT * FROM meeting_members WHERE meeting_id=?", (m["id"],)).fetchall()
+            for mr in members:
+                conn.execute("INSERT INTO meeting_members (meeting_id, user_id, username) VALUES (?,?,?)",
+                             (new_id, mr["user_id"], mr["username"]))
+            conn.commit()
+            for g in bot.guilds:
+                for mr in members:
+                    member = g.get_member(int(mr["user_id"]))
+                    if not member: continue
+                    pch = find_progress_channel(g, member)
+                    if pch:
+                        try:
+                            await pch.send(
+                                f"🔁 {member.mention} — **{m['title']}** est planifié pour "
+                                f"**{fmt_datetime(next_str, m['time'])}** (récurrent).",
+                                view=MeetingRSVPView(new_id, m["title"], m["organizer_id"])
+                            )
+                        except: pass
+    finally:
+        conn.close()
+
 
 # ═══════════════════ ADMIN COMMANDS ══════════════════════════════════════════
 
@@ -2727,7 +3590,7 @@ async def on_ready():
         print(f"   Canaux progress: {len(progress)} ({', '.join(progress[:5])}{'...' if len(progress)>5 else ''})")
     for t in [daily_summary, auto_close, reminder_start, notify_leave_today, check_forgotten_sessions,
               reminder_daily, notify_holidays, evening_summary_20h, midnight_check, force_close_3am,
-              weekly_digest]:
+              weekly_digest, meeting_reminders, meeting_recurrence]:
         if not t.is_running(): t.start()
     print(f"   Daily: '{DAILY_KEYWORD}' dans *{PROGRESS_CHANNEL_SUFFIX} | /stop bloqué sans daily")
     print(f"   Rappels: canaux progress (DST-aware timezone par artiste)")

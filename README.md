@@ -6,7 +6,9 @@ Bot Discord complet pour tracker les heures de travail, gérer les congés, les 
 
 ## ⚡ Démarrage rapide
 
-1. Crée le bot sur [discord.com/developers](https://discord.com/developers/applications) (Intents : ✅ Server Members, ✅ Message Content, ✅ Guild Members)
+1. Crée le bot sur [discord.com/developers](https://discord.com/developers/applications)
+   - Intents : ✅ Server Members, ✅ Message Content, ✅ Guild Members
+   - Permissions : ✅ Manage Channels, ✅ Manage Roles *(nécessaires pour le canal setup temporaire)*
 2. Sur ton serveur Discord, crée :
    - `#time-tracking` — résumés publics (⚠️ les messages non-admin sont auto-supprimés)
    - `#time-tracking-admin` — privé admin (congés, sessions suspectes, alertes)
@@ -44,18 +46,15 @@ Bot Discord complet pour tracker les heures de travail, gérer les congés, les 
 
 ### 🎓 Setup guidé (`/setup`)
 
-Lance le tutoriel de configuration en **message privé** avec le bot. En 4 étapes simples :
+Lance le tutoriel de configuration en **canal temporaire privé**. En 4 étapes avec boutons :
 1. Tes horaires (Matin / Standard / Après-midi / Manuel)
 2. Ta timezone (Europe, UK, East US, West US)
 3. Ta pause déjeuner (30 / 45 / 60min / Désactivée)
 4. Récap + aide-mémoire des commandes essentielles
 
-**⚠️ Prérequis DM :** le bot t'envoie les étapes en message privé. Si tu ne reçois rien :
-1. Clique sur le **nom du serveur** → **Paramètres → Confidentialité**
-2. Active ✅ **Autoriser les messages privés des membres du serveur**
-3. Refais `/setup`
+Le bot crée automatiquement un canal **`#setup-[ton-nom]`** visible uniquement par toi et les admins. Il se supprime tout seul à la fin (ou après 10min d'inactivité).
 
-> Le setup est aussi proposé **automatiquement en DM** quand tu rejoins le serveur (si tu as le rôle `DreamTeam`).
+> Le setup est lancé **automatiquement** quand tu rejoins le serveur avec le rôle `DreamTeam`.
 
 ### Comment poster ton daily
 
@@ -177,6 +176,92 @@ DEFAULT_LUNCH_MINUTES = 60             # Pause déj
 EXPECTED_WORK_HOURS = 8                # Seuil overtime
 MIN_WEEKLY_HOURS = 32                  # Alerte si moins
 ```
+
+
+---
+
+## 📅 Système de Meetings
+
+### Commandes Admin
+
+| Commande | Description |
+|----------|-------------|
+| `/createmeeting` | 📅 Créer un meeting (vote optionnel avec `vote:True`) |
+| `/cancelmeeting [id]` | ❌ Annuler un meeting |
+| `/closevote [id]` | 🗳️ Clore le vote manuellement (si vote=True) |
+| `/rsvpstatus [id]` | 📊 Voir les RSVP d'un meeting |
+| `/meetings` | 📋 Voir tous les meetings à venir |
+
+### Commandes Artiste
+
+| Commande | Description |
+|----------|-------------|
+| `/myagenda` | 📆 Tes meetings à venir + statut RSVP |
+
+### Créer un meeting
+
+```
+# Cas normal — créneau fixe, RSVP direct
+/createmeeting date:demain time:16h title:"Review animation" teams:"Animation Team"
+
+# Avec vote de créneau (optionnel)
+/createmeeting date:lundi title:"Sync LookDev" teams:"LookDev Team" vote:True slots:15h,16h,17h
+
+# Paramètres disponibles
+  date       : demain, lundi, 25/02/2026...
+  time       : 16h, 14h30 (requis sans vote)
+  title      : sujet du meeting
+  teams      : rôles invités séparés par virgules
+  voice      : salon vocal (optionnel)
+  duration   : durée en minutes (défaut: 60)
+  urgent     : true/false — 🚨 flag urgent
+  recurrence : none / weekly / biweekly / monthly
+  vote       : true/false — active le vote de créneau
+  slots      : créneaux si vote=True (ex: 15h,16h,17h)
+```
+
+### RSVP
+
+Chaque artiste invité reçoit dans son canal `-progress` :
+- **✅ Je serai là !** — confirme sa présence
+- **❌ Je ne peux pas** — se désinscrit
+- **🔄 Autre moment...** — ouvre une popup pour proposer une alternative (texte libre)
+
+Si plusieurs personnes proposent un autre moment, l'admin reçoit une alerte avec toutes les suggestions.
+
+### Vote de créneau (optionnel — `vote:True`)
+
+Utile quand l'heure n'est pas encore fixée :
+1. Le bot crée le meeting en statut **🗳️ vote en cours**
+2. Les invités reçoivent un lien vers `#meetings` pour voter
+3. Dans `#meetings`, boutons par créneau — **on peut voter pour plusieurs**
+4. Quand tout le monde a voté → **confirmation automatique** du créneau gagnant
+5. Sinon, admin fait `/closevote [id]` pour forcer la clôture
+
+### Récurrence
+
+- `weekly` — nouveau meeting créé automatiquement chaque semaine
+- `biweekly` — toutes les 2 semaines  
+- `monthly` — chaque mois
+
+### Automatisations
+
+| Quand | Quoi |
+|-------|------|
+| 30min avant le meeting | Rappel dans le canal progress de chaque invité |
+| Chaque nuit à 1h | Création de la prochaine occurrence (meetings récurrents) |
+
+### Canaux
+
+| Canal | Contenu |
+|-------|---------|
+| `#meetings` | Annonces publiques + boutons de vote *(créer le canal sur le serveur)* |
+
+> Si `#meetings` n'existe pas, les annonces vont dans `#time-tracking`.
+
+### Conflits
+
+Le bot détecte automatiquement si un des membres invités a déjà un meeting au même créneau et affiche un warning. Le meeting est créé quand même — l'admin décide.
 
 ## 🗃️ Base de données
 
