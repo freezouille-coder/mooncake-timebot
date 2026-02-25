@@ -2145,7 +2145,7 @@ async def _notify_meeting_confirmed(conn, guild, meeting_id: int, slot_id: int):
 @bot.tree.command(name="createmeeting", description="📅 Créer un meeting")
 @app_commands.describe(
     date      = "Date (ex: demain, lundi, 25/02/2026)",
-    time      = "Heure (ex: 16h, 14h30)",
+    heure     = "Heure (ex: 16h, 14h30)",
     title     = "Sujet du meeting",
     teams     = "Rôles invités séparés par virgules (ex: Animation Team, LookDev Team)",
     voice     = "Salon vocal (ex: lookdev, general)",
@@ -2166,7 +2166,7 @@ async def cmd_createmeeting(
     date        : str,
     title       : str,
     teams       : str,
-    time        : Optional[str] = None,
+    heure       : Optional[str] = None,
     voice       : Optional[str] = None,
     duration    : int   = 60,
     urgent      : bool  = False,
@@ -2174,8 +2174,17 @@ async def cmd_createmeeting(
     vote        : bool  = False,
     slots       : Optional[str] = None,
 ):
-    if not is_admin(interaction):
-        return await interaction.response.send_message("⚠️ Réservé aux admins.", ephemeral=True)
+    # ── Répondre immédiatement pour éviter le timeout Discord (3s max) ──
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except Exception:
+        return  # Déjà répondu ou expiré
+
+    try:
+        if not is_admin(interaction):
+            return await interaction.followup.send("⚠️ Réservé aux admins.", ephemeral=True)
+    except Exception:
+        pass
 
     guild      = interaction.guild
     organizer  = interaction.user
@@ -2183,27 +2192,27 @@ async def cmd_createmeeting(
     # ── Validation ──
     date_str = parse_relative_date(date)
     if not date_str:
-        return await interaction.response.send_message(f"⚠️ Date invalide : `{date}`", ephemeral=True)
+        return await interaction.followup.send(f"⚠️ Date invalide : `{date}`", ephemeral=True)
 
     if vote:
         if not slots:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "⚠️ `slots` est requis quand `vote=True`. Ex: `15h,16h,17h`", ephemeral=True)
         raw_slots    = [s.strip() for s in slots.split(",") if s.strip()]
         parsed_slots = []
         for rs in raw_slots:
             t = parse_time_str(rs)
             if t: parsed_slots.append(t)
-            else: return await interaction.response.send_message(f"⚠️ Créneau invalide : `{rs}`", ephemeral=True)
+            else: return await interaction.followup.send(f"⚠️ Créneau invalide : `{rs}`", ephemeral=True)
         first_h, first_m = parsed_slots[0]
         first_time = f"{first_h:02d}:{first_m:02d}"
         status = "voting"
     else:
-        if not time:
-            return await interaction.response.send_message("⚠️ `time` est requis. Ex: `16h`", ephemeral=True)
-        t = parse_time_str(time)
+        if not heure:
+            return await interaction.followup.send("⚠️ `heure` est requis. Ex: `16h`", ephemeral=True)
+        t = parse_time_str(heure)
         if not t:
-            return await interaction.response.send_message(f"⚠️ Heure invalide : `{time}`", ephemeral=True)
+            return await interaction.followup.send(f"⚠️ Heure invalide : `{heure}`", ephemeral=True)
         first_h, first_m = t
         first_time = f"{first_h:02d}:{first_m:02d}"
         parsed_slots = [(first_h, first_m)]
@@ -2222,7 +2231,7 @@ async def cmd_createmeeting(
             not_found_teams.append(tname)
 
     if not invited_members:
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             f"⚠️ Aucun membre trouvé pour : {', '.join(team_names)}", ephemeral=True)
 
     member_ids = [str(m.id) for m in invited_members]
